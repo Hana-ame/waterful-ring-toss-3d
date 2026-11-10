@@ -8,9 +8,11 @@ import {
 /**
  * Hardware Mobile Sensor Bridge (`sensorBridge.ts`)
  * Connects:
- * 1. `deviceorientation` (beta, gamma, alpha) with screen orientation (0° / 90° / -90° / 180°) axis remapping
+ * 1. `deviceorientation` (beta, gamma, alpha) using the exact W3C 3D gravity vector projection
+ *    onto the screen plane across Portrait (0°), Landscape-Left (90°), Landscape-Right (-90° / 270°),
+ *    and Upside-Down (180°), accurately handling inverted / head-down phone orientations (`手机头向下`).
  * 2. `devicemotion` (`rotationRate.alpha`, `rotationRate.beta`, `rotationRate.gamma`) for real-time gyroscope angular velocity
- *    so shaking or tilting the phone drives whole-tank water inertial sloshing (`waterAngularVel`)!
+ *    so shaking or tilting the phone drives whole-tank water inertial sloshing (`waterAngularVel`).
  * 3. iOS 13+ `DeviceOrientationEvent.requestPermission()` & `DeviceMotionEvent.requestPermission()` handshake.
  */
 
@@ -30,34 +32,71 @@ function getScreenOrientationAngle(): number {
 }
 
 /**
- * Maps raw DeviceOrientation (beta, gamma) in degrees into console-local (rollRad, pitchRad)
- * accounting for Portrait (0°), Landscape-Left (90°), Landscape-Right (-90° / 270°), and Upside-Down (180°).
+ * Maps raw W3C DeviceOrientation (beta, gamma) in degrees into console-local (rollRad, pitchRad)
+ * using the exact 3D gravity vector projection onto the device screen frame:
+ * - In W3C DeviceOrientation:
+ *   - `beta` in [-180°, 180°] is front-to-back tilt around +X_device.
+ *     When `beta > 0°`, the phone's top/head (+Y_device) points UP above the horizon (`g_y_dev = -sin(beta) < 0`).
+ *     When `beta < 0°` (`手机头向下`), the phone's top/head (+Y_device) points DOWN below the horizon (`g_y_dev = -sin(beta) > 0`)!
+ *   - `gamma` in [-90°, 90°] is side-to-side tilt around +Y_device.
+ *     When `|beta| > 90°` (screen facing downward toward the ground), W3C `gamma` inverts sign; multiplying by
+ *     the regularized `cos(beta)` sign keeps lateral gravity `g_x_dev` strictly continuous across vertical!
  */
 export function mapDeviceOrientationToTiltRadians(
   betaDeg: number,
   gammaDeg: number,
   screenAngleDeg = 0
 ): { rollRad: number; pitchRad: number } {
-  // Neutral handheld viewing angle is ~60° beta in portrait
-  let rollDeg = gammaDeg;
-  let pitchDeg = betaDeg - 60;
+  const betaRad = THREE.MathUtils.degToRad(betaDeg);
+  const gammaRad = THREE.MathUtils.degToRad(gammaDeg);
+
+  const sinB = Math.sin(betaRad);
+  const cosB = Math.cos(betaRad);
+  const sinG = Math.sin(gammaRad);
+  const cosG = Math.cos(gammaRad);
+
+  // Regularized cos(beta) factor preserves continuous lateral sign when pitching past ±90°
+  // without attenuating lateral roll sensitivity near upright handheld angles (beta ~ 60°..85°)
+  const cosBSign = cosB / Math.sqrt(cosB * cosB + 0.12 * sinB * sinB + 1e-8);
+
+  // 3D gravity components in hardware device frame (+X right, +Y top/head `手机头`, +Z out of screen)
+  const gxDev = sinG * cosBSign;
+  const gyDev = -sinB;
+
+  let gxScreen = gxDev;
+  let gyScreen = gyDev;
+  let pitchDeg = (betaDeg >= 0 ? betaDeg - 60 : -betaDeg - 60) * (cosG >= 0 ? 1 : -1);
 
   if (screenAngleDeg === 90) {
-    // Landscape primary: phone rotated 90° CCW
-    rollDeg = -(betaDeg);
+    // Landscape primary: phone rotated 90° CCW (+Y_device is on the LEFT of the screen)
+    gxScreen = gyDev;
+    gyScreen = -gxDev;
     pitchDeg = gammaDeg - 60;
   } else if (screenAngleDeg === -90 || screenAngleDeg === 270) {
-    // Landscape secondary: phone rotated 90° CW
-    rollDeg = betaDeg;
+    // Landscape secondary: phone rotated 90° CW (+Y_device is on the RIGHT of the screen)
+    gxScreen = -gyDev;
+    gyScreen = gxDev;
     pitchDeg = -(gammaDeg + 60);
   } else if (screenAngleDeg === 180) {
-    rollDeg = -gammaDeg;
+    // Upside-down portrait
+    gxScreen = -gxDev;
+    gyScreen = -gyDev;
     pitchDeg = -(betaDeg - 60);
   }
 
+  // Exact full-circle [-π, π] in-screen gravity angle measured from -Y_screen:
+  // - When gyScreen < 0 (phone head UP): |rollRad| < π/2 -> gravity pulls toward -Y (bottom of tank)
+  // - When gyScreen > 0 (phone head DOWN `手机头向下`): |rollRad| > π/2 (up to ±π) -> gravity pulls toward +Y (top of tank)!
+  const rollRad =
+    Math.abs(gxScreen) < 1e-6 && Math.abs(gyScreen) < 1e-6
+      ? 0
+      : Math.atan2(gxScreen, -gyScreen);
+
+  const pitchRad = THREE.MathUtils.degToRad(THREE.MathUtils.clamp(pitchDeg, -55, 55));
+
   return {
-    rollRad: THREE.MathUtils.degToRad(THREE.MathUtils.clamp(rollDeg, -150, 150)),
-    pitchRad: THREE.MathUtils.degToRad(THREE.MathUtils.clamp(pitchDeg, -55, 55)),
+    rollRad,
+    pitchRad,
   };
 }
 
@@ -104,6 +143,9 @@ export function attachDeviceSensorBridge(
     } else if (screenAngle === -90 || screenAngle === 270) {
       ratePitchDeg = -(e.rotationRate.gamma || 0);
       rateRollDeg = e.rotationRate.beta || 0;
+    } else if (screenAngle === 180) {
+      ratePitchDeg = -(e.rotationRate.beta || 0);
+      rateRollDeg = -(e.rotationRate.gamma || 0);
     }
 
     setGyroscopeAngularVelocity(

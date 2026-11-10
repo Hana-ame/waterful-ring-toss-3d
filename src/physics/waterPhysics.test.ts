@@ -11,6 +11,7 @@ import {
   sampleWaterVelocityField,
   computeExactTorusToTorusContacts,
   computeIPCBarrierGradient,
+  computeIPCBarrierHessian,
   computeGaussLinkingNumberRingPeg,
   saveSimulationStateToStorage,
   loadSimulationStateFromStorage,
@@ -20,7 +21,7 @@ import {
 import { mapDeviceOrientationToTiltRadians } from './sensorBridge';
 import { waterAudio } from '../audio/waterAudio';
 
-test('P0 & P1: Gyroscope rotationRate and tilt excite whole-tank water sloshing (waterAngularVel) and gz = -sin(pitch)', () => {
+test('P0 & P1: Gyroscope rotationRate, tilt sloshing, and phone head-down (手机头向下 beta < 0) gravity direction', () => {
   const state = createInitialSimulationState(4);
 
   // 1. Verify exact right-handed gz = -Math.sin(pitch) sign
@@ -47,11 +48,35 @@ test('P0 & P1: Gyroscope rotationRate and tilt excite whole-tank water sloshing 
     `Expected opposite inertial sloshing velocities at top (${sloshVelTop.x}) vs bottom (${sloshVelBottom.x})`
   );
 
-  // 3. Verify landscape orientation axis remapping in sensorBridge
+  // 3. Verify normal upright portrait & landscape orientation axis remapping in sensorBridge
   const portrait = mapDeviceOrientationToTiltRadians(60, 25, 0);
   const landscape90 = mapDeviceOrientationToTiltRadians(25, 60, 90);
   assert.ok(portrait.rollRad > 0.3, 'Portrait gamma maps to positive roll');
   assert.ok(landscape90.rollRad < -0.3, 'Landscape 90° beta maps to negative roll');
+
+  // 4. Verify phone head pointing down (`手机头向下`: beta = -60° and beta = -90°, gamma = 0° in portrait)
+  // produces upward screen gravity (`state.gravityDir.y > 0.85`) with ZERO sideways drift (`|gx| < 1e-5`)!
+  const headDown60 = mapDeviceOrientationToTiltRadians(-60, 0, 0);
+  setGravityFromTilt(state, headDown60.rollRad, headDown60.pitchRad);
+  assert.ok(
+    state.gravityDir.y > 0.99 && Math.abs(state.gravityDir.x) < 1e-5,
+    `When phone head points down at handheld angle (beta=-60, gamma=0), gravity must be (0, +1, 0), got (${state.gravityDir.x}, ${state.gravityDir.y}, ${state.gravityDir.z})`
+  );
+
+  const headDown90 = mapDeviceOrientationToTiltRadians(-90, 0, 0);
+  setGravityFromTilt(state, headDown90.rollRad, headDown90.pitchRad);
+  assert.ok(
+    state.gravityDir.y > 0.85 && Math.abs(state.gravityDir.x) < 1e-5,
+    `When phone is vertical head-down (beta=-90, gamma=0), gravity must point toward +Y with zero sideways drift, got (${state.gravityDir.x}, ${state.gravityDir.y}, ${state.gravityDir.z})`
+  );
+
+  // Also verify slight tilt while phone head points down (beta = -80°, gamma = 20°) keeps gy > 0.8 and pulls toward +X
+  const headDownTilted = mapDeviceOrientationToTiltRadians(-80, 20, 0);
+  setGravityFromTilt(state, headDownTilted.rollRad, headDownTilted.pitchRad);
+  assert.ok(
+    state.gravityDir.y > 0.85 && state.gravityDir.x > 0.12,
+    `Expected head-down +20° gamma to keep gy > 0.85 and gx > 0.12, got (${state.gravityDir.x}, ${state.gravityDir.y})`
+  );
 });
 
 test('P1 & P2: Isolated per-instance WebAssembly memory and live uniformFloatView at offset 2048', () => {
@@ -359,11 +384,15 @@ test('Touch-duration force ramping, finite-stroke jet cutoff, anti-tunneling nee
 });
 
 test('Incremental Potential Contact (IPC C2 log-barrier) + Gauss Linking Integral: tilted and stacked rings entering needle NEVER jam in collision box', () => {
-  // 1. Verify C^2 smooth IPC barrier properties
+  // 1. Verify C^2 smooth IPC logarithmic barrier gradient & Hessian properties
   assert.equal(computeIPCBarrierGradient(0.04, 0.035), 0.0, 'Zero barrier force outside dHat');
+  assert.equal(computeIPCBarrierHessian(0.04, 0.035), 0.0, 'Zero barrier Hessian outside dHat');
   const gFar = computeIPCBarrierGradient(0.025, 0.035);
   const gNear = computeIPCBarrierGradient(0.005, 0.035);
+  const hFar = computeIPCBarrierHessian(0.025, 0.035);
+  const hNear = computeIPCBarrierHessian(0.005, 0.035);
   assert.ok(gNear > gFar && gFar > 0, `Expected IPC barrier force to grow smoothly as d -> 0+ (${gNear} > ${gFar})`);
+  assert.ok(hNear > hFar && hFar > 0, `Expected IPC barrier Hessian to grow smoothly as d -> 0+ (${hNear} > ${hFar})`);
 
   // 2. Test tilted rings (15 deg, 35 deg, 48 deg tilt) entering the needle tip:
   // None of them may get stuck/jammed mid-shaft ("环进入之后不可以卡碰撞箱") — all must slide all the way down to the holder cup!

@@ -818,10 +818,15 @@ export function setGravityFromTilt(
   rollRad: number,
   pitchRad: number
 ): void {
-  const clampedRoll = THREE.MathUtils.clamp(rollRad, -Math.PI * 0.85, Math.PI * 0.85);
-  const clampedPitch = THREE.MathUtils.clamp(pitchRad, -Math.PI * 0.45, Math.PI * 0.45);
+  // Wrap rollRad cleanly to [-pi, pi] (no artificial ±0.85*pi clamp!) so holding the phone
+  // with its head pointing straight down (rollRad = ±pi) produces exact upward screen gravity (gx = 0, gy = +1).
+  const clampedRoll =
+    THREE.MathUtils.euclideanModulo(rollRad + Math.PI, Math.PI * 2) - Math.PI;
+  const clampedPitch = THREE.MathUtils.clamp(pitchRad, -Math.PI, Math.PI);
 
-  const deltaRoll = clampedRoll - state.tiltRoll;
+  let deltaRoll = clampedRoll - state.tiltRoll;
+  if (deltaRoll > Math.PI) deltaRoll -= Math.PI * 2;
+  if (deltaRoll < -Math.PI) deltaRoll += Math.PI * 2;
   const deltaPitch = clampedPitch - state.tiltPitch;
 
   state.tiltRoll = clampedRoll;
@@ -904,7 +909,7 @@ export function sampleWaterVelocityField(
     const dz = pos.z - nozzle.z;
     const dist3DSq = dx * dx + dy * dy + dz * dz;
 
-    // --- A. EJECTION PHASE (`喷水口只向上喷水`) ---
+    // --- A. EJECTION PHASE (`喷水口只向上喷水` — Analytical 3D Gaussian Turbulent Plume) ---
     if (jet > 0.001) {
       const jetCenterX = nozzle.x + (nozzle.dirX / nozzle.dirY) * dy;
       const jetCenterZ = nozzle.z + (nozzle.dirZ / nozzle.dirY) * dy;
@@ -913,48 +918,43 @@ export function sampleWaterVelocityField(
 
       const spreadRadius = 0.48 + dy * 0.16;
       const radialDistSq = rx * rx + rz * rz * 1.15;
-      const gaussian = Math.exp(-radialDistSq / (spreadRadius * spreadRadius));
+      const bell = Math.exp(-0.5 * (radialDistSq / (spreadRadius * spreadRadius)));
 
       const verticalDecay = Math.max(0.34, 1.0 - heightNorm * 0.36);
-      const jetSpeed = jet * 12.6 * gaussian * verticalDecay;
+      const jetSpeed = jet * 12.6 * bell * verticalDecay;
 
-      // Keep ring centered in the rising jet column in the lower half, then arch inward over the needles in the upper half
+      const hDiff = Math.max(0, heightNorm - 0.48);
       const upperArchInward =
         heightNorm > 0.48
-          ? -sign * 2.35 * jet * Math.pow(heightNorm - 0.48, 1.1) * gaussian
-          : -rx * 1.45 * jet * gaussian;
+          ? -sign * 2.35 * jet * hDiff * bell
+          : -rx * 1.45 * jet * bell;
 
+      const hCube = heightNorm * heightNorm * heightNorm;
       outVel.x += nozzle.dirX * jetSpeed + upperArchInward;
-      outVel.y += nozzle.dirY * jetSpeed * (1.0 - 0.42 * Math.pow(heightNorm, 3.0));
-      outVel.z +=
-        nozzle.dirZ * jetSpeed +
-        Math.sin(t * 7.5 + dy * 2.5 + i * 2.1) * 0.22 * jet * gaussian * turbMult;
+      outVel.y += nozzle.dirY * jetSpeed * (1.0 - 0.42 * hCube);
+      outVel.z += nozzle.dirZ * jetSpeed;
 
       if (heightNorm < 0.48 && Math.abs(rx) > 0.12) {
-        const entrainStrength = jet * 1.25 * (1.0 - heightNorm * 1.8) * Math.exp(-dist3DSq / 3.4);
+        const entrainBell = Math.exp(-dist3DSq * 0.28);
+        const entrainStrength = jet * 1.25 * (1.0 - heightNorm * 1.8) * entrainBell;
         outVel.x += (-rx / (Math.abs(rx) + 0.18)) * entrainStrength;
         outVel.z += (-rz / (Math.abs(rz) + 0.18)) * entrainStrength * 0.55;
       }
 
-      const shearGradZ = (-2 * rx / (spreadRadius * spreadRadius)) * gaussian * jet * 3.8 * turbMult;
-      const shearGradX = (2 * rz / (spreadRadius * spreadRadius)) * gaussian * jet * 2.8 * turbMult;
-      outVorticity.z += shearGradZ;
-      outVorticity.x += shearGradX + Math.cos(t * 7.3 + pos.y * 2.5) * jet * 1.6 * gaussian * turbMult;
-      outVorticity.y += Math.sin(t * 5.7 + pos.x * 2.5) * jet * 1.4 * gaussian * turbMult;
+      const invSpreadSq = 1.0 / (spreadRadius * spreadRadius);
+      outVorticity.z += -2 * rx * invSpreadSq * bell * jet * 3.8 * turbMult;
+      outVorticity.x += 2 * rz * invSpreadSq * bell * jet * 2.8 * turbMult;
     }
 
     // --- B. SEPARATE RETURN-VENT SUCTION (`独立回水口吸水：从底部正中央与外侧回水阀吸水，绝不从喷水口吸水！`) ---
     if (suction > 0.001) {
-      // Dedicated Return Intake Vent #1: Bottom Center (x = 0.0, y = -halfHeight + 0.04, z = 0.0)
-      const centerIntakeX = 0.0;
       const centerIntakeY = -state.tank.halfHeight + 0.04;
-      const cdx = pos.x - centerIntakeX;
+      const cdx = pos.x;
       const cdy = Math.max(0.05, pos.y - centerIntakeY);
       const cdz = pos.z;
       const cDistSq = cdx * cdx + cdy * cdy + cdz * cdz;
       const cDist = Math.sqrt(cDistSq);
 
-      // Dedicated Return Intake Vent #2: Outer Bottom Wall Corner (x = ±1.52, y = -halfHeight + 0.22)
       const outerIntakeX = sign * (state.tank.halfWidthBottom - 0.06);
       const outerIntakeY = -state.tank.halfHeight + 0.22;
       const odx = pos.x - outerIntakeX;
@@ -992,12 +992,12 @@ export function sampleWaterVelocityField(
       const vx = pos.x - vortexCenterX;
       const vy = pos.y - vortexCenterY;
       const vortexDistSq = vx * vx * 0.6 + vy * vy * 0.5;
-      const cellStrength = netCirc * 1.85 * Math.exp(-vortexDistSq / 2.8);
+      const cellStrength = (netCirc * 1.85) / (1.0 + vortexDistSq * 0.35);
 
       outVel.x += -sign * vy * cellStrength * 0.85;
       outVel.y += sign * vx * cellStrength * 0.95;
 
-      const zRollStrength = netCirc * 0.65 * Math.exp(-dist3DSq / 4.5);
+      const zRollStrength = (netCirc * 0.65) / (1.0 + dist3DSq * 0.22);
       outVel.z += -pos.y * 0.25 * zRollStrength * sign;
       outVel.y += pos.z * 0.32 * zRollStrength * sign;
 
@@ -1011,16 +1011,15 @@ export function sampleWaterVelocityField(
   const wy = state.waterAngularVel.y;
   const wz = state.waterAngularVel.z;
   if (wx * wx + wy * wy + wz * wz > 1e-6) {
-    // Confined vortex flow v = omega x pos inside tank
     const sloshVx = wy * pos.z - wz * pos.y;
     const sloshVy = wz * pos.x - wx * pos.z;
     const sloshVz = wx * pos.y - wy * pos.x;
 
-    // Wall confinement envelope so normal velocity vanishes smoothly near boundaries
-    const radialEnvelope = Math.exp(
-      -(pos.x * pos.x) / (state.tank.halfWidthTop * state.tank.halfWidthTop * 1.35) -
-        (pos.y * pos.y) / (state.tank.halfHeight * state.tank.halfHeight * 1.35)
-    );
+    const radialEnvelope =
+      1.0 /
+      (1.0 +
+        (pos.x * pos.x) / (state.tank.halfWidthTop * state.tank.halfWidthTop * 1.35) +
+        (pos.y * pos.y) / (state.tank.halfHeight * state.tank.halfHeight * 1.35));
     const gain = 0.75 * radialEnvelope;
 
     outVel.x += sloshVx * gain;
@@ -1416,21 +1415,47 @@ function updateBubbles(state: SimulationState, dt: number): void {
  * 3. Verifies the 3D in-plane distance `||P_pierce - ring.position||` is strictly less than
  *    `holeRadius - pegRadiusAtY` (so the peg shaft genuinely passes through the torus aperture!).
  */
+/**
+ * Incremental Potential Contact (IPC, Li et al. 2020) C^2 Smooth Logarithmic Barrier Gradient:
+ * b(d) = -(d - dHat)^2 * ln(d / dHat) for 0 < d < dHat, and 0 for d >= dHat.
+ * Since db/dd = -2 * (d - dHat) * ln(d / dHat) - (d - dHat)^2 / d < 0,
+ * returns the positive repulsive barrier force magnitude -db/dd >= 0:
+ *   -db/dd = 2 * (d - dHat) * ln(d / dHat) + (d - dHat)^2 / d
+ * Regularized at the d -> 0+ singularity via C^infinity smoothing d_reg = sqrt(max(0, d)^2 + epsD^2).
+ */
 export function computeIPCBarrierGradient(d: number, dHat: number, stiffness = 1.0): number {
   if (d >= dHat) return 0.0;
-  // Smooth singularity regularization (epsD = 0.002) prevents 1/d force blowup as d -> 0+
   const posD = Math.max(0.0, d);
   const clampedD = Math.sqrt(posD * posD + 0.002 * 0.002);
   if (clampedD >= dHat) return 0.0;
   const diff = clampedD - dHat; // negative
-  const grad = 2.0 * diff * Math.log(clampedD / dHat) + (diff * diff) / clampedD;
+  const logRatio = Math.log(clampedD / dHat); // negative
+  const grad = 2.0 * diff * logRatio + (diff * diff) / clampedD; // strictly positive
   return Math.min(stiffness * grad, 32.0);
 }
 
 /**
- * Exact 3D Gauss Linking Integral Lk(ring, peg) between the closed torus centerline circle
- * and the vertical needle segment [pegBase, pegTop]:
- * Measures the exact topological winding number of the ring around the needle shaft.
+ * Incremental Potential Contact (IPC, Li et al. 2020) C^2 Logarithmic Barrier Hessian (Second Derivative):
+ *   d^2 b / dd^2 = -2 * ln(d / dHat) - 4 * (d - dHat) / d + (d - dHat)^2 / d^2 > 0
+ * Used for second-order Newton / Levenberg-Marquardt curvature damping at contact singularities.
+ */
+export function computeIPCBarrierHessian(d: number, dHat: number, stiffness = 1.0): number {
+  if (d >= dHat) return 0.0;
+  const posD = Math.max(0.0, d);
+  const clampedD = Math.sqrt(posD * posD + 0.002 * 0.002);
+  if (clampedD >= dHat) return 0.0;
+  const diff = clampedD - dHat; // negative
+  const logRatio = Math.log(clampedD / dHat); // negative
+  const hessian =
+    -2.0 * logRatio - (4.0 * diff) / clampedD + (diff * diff) / (clampedD * clampedD);
+  return Math.max(0.0, stiffness * hessian);
+}
+
+/**
+ * Exact 3D Gauss Linking Integral Lk(ring, peg) between the closed 16-segment torus centerline circle
+ * and the multi-segment vertical needle shaft:
+ *   Lk = (1 / 4pi) \oint_{C_1} \oint_{C_2} ((r_1 - r_2) . (dr_1 x dr_2)) / ||r_1 - r_2||^3
+ * Measures the true topological winding number of the ring around the needle shaft.
  */
 export function computeGaussLinkingNumberRingPeg(ring: RingState, peg: PegSpec): number {
   const R = ring.majorRadius;
@@ -1438,18 +1463,12 @@ export function computeGaussLinkingNumberRingPeg(ring: RingState, peg: PegSpec):
   _ringAxisU.set(1, 0, 0).applyQuaternion(ring.quaternion);
   _ringAxisV.set(0, 1, 0).applyQuaternion(ring.quaternion);
 
-  const bx0 = peg.baseX;
-  const by0 = peg.baseY - 0.15;
-  const bz0 = peg.baseZ;
-  const bx1 = peg.baseX;
-  const by1 = pegTopY;
-  const bz1 = peg.baseZ;
-  const dBx = bx1 - bx0;
-  const dBy = by1 - by0;
-  const dBz = bz1 - bz0;
+  const byStart = peg.baseY - 0.18;
+  const byEnd = pegTopY + 0.14;
+  const pegSegments = 4;
+  const segLenY = (byEnd - byStart) / pegSegments;
 
   let integralSum = 0.0;
-  const midBy = 0.5 * (by0 + by1);
 
   for (let s = 0; s < NUM_TORUS_SAMPLES; s++) {
     const sNext = (s + 1) % NUM_TORUS_SAMPLES;
@@ -1467,17 +1486,23 @@ export function computeGaussLinkingNumberRingPeg(ring: RingState, peg: PegSpec):
     const dAx = ax1 - ax0;
     const dAy = ay1 - ay0;
     const dAz = az1 - az0;
+    const midAx = 0.5 * (ax0 + ax1);
+    const midAy = 0.5 * (ay0 + ay1);
+    const midAz = 0.5 * (az0 + az1);
 
-    const rx = 0.5 * (ax0 + ax1) - bx0;
-    const ry = 0.5 * (ay0 + ay1) - midBy;
-    const rz = 0.5 * (az0 + az1) - bz0;
-    const dist = Math.max(0.02, Math.hypot(rx, ry, rz));
+    // Since dBx = 0 and dBz = 0 for the vertical peg shaft, (dA x dB) = (dAz * dBy, 0, -dAx * dBy)
+    const cx = dAz * segLenY;
+    const cz = -dAx * segLenY;
 
-    // (dA x dB) . r / |r|^3
-    const cx = dAy * dBz - dAz * dBy;
-    const cy = dAz * dBx - dAx * dBz;
-    const cz = dAx * dBy - dAy * dBx;
-    integralSum += (cx * rx + cy * ry + cz * rz) / (dist * dist * dist);
+    for (let pSeg = 0; pSeg < pegSegments; pSeg++) {
+      const midBy = byStart + (pSeg + 0.5) * segLenY;
+      const rx = midAx - peg.baseX;
+      const ry = midAy - midBy;
+      const rz = midAz - peg.baseZ;
+      const distSq = Math.max(0.0004, rx * rx + ry * ry + rz * rz);
+      const dist = Math.sqrt(distSq);
+      integralSum += (cx * rx + cz * rz) / (distSq * dist);
+    }
   }
 
   return Math.abs(integralSum) / (4.0 * Math.PI);
@@ -1501,11 +1526,13 @@ export function evaluateHookedRings(state: SimulationState): number {
           ring.position.x - currentPeg.baseX,
           ring.position.z - currentPeg.baseZ
         );
+        const linkingNumber = computeGaussLinkingNumberRingPeg(ring, currentPeg);
         if (
           ring.position.y <= pegTopY + ring.minorRadius * 1.45 &&
           ring.position.y >= currentPeg.baseY - 0.1 &&
           horizDist <= holeRadius + currentPeg.baseRadius + 0.04 &&
-          absNy >= 0.28
+          absNy >= 0.28 &&
+          linkingNumber >= 0.18
         ) {
           hookedCount++;
           continue;
@@ -1514,7 +1541,7 @@ export function evaluateHookedRings(state: SimulationState): number {
       ring.hookedPegId = null;
     }
 
-    // 2. Otherwise check if the ring plane is pierced by a peg shaft (and not edge-on vertical)
+    // 2. Otherwise check if the ring plane is pierced by a peg shaft AND topologically linked via Gauss Linking Integral
     if (absNy < 0.28) continue;
 
     for (let p = 0; p < state.pegs.length; p++) {
@@ -1533,7 +1560,10 @@ export function evaluateHookedRings(state: SimulationState): number {
         const hFrac = THREE.MathUtils.clamp((pierceY - peg.baseY) / peg.height, 0, 1);
         const pegRadiusAtY = THREE.MathUtils.lerp(peg.baseRadius, peg.tipRadius, hFrac);
 
-        if (distInRingPlane < holeRadius - pegRadiusAtY * 0.35) {
+        if (
+          distInRingPlane < holeRadius - pegRadiusAtY * 0.35 &&
+          computeGaussLinkingNumberRingPeg(ring, peg) >= 0.18
+        ) {
           ring.hookedPegId = peg.id;
           hookedCount++;
           break;
@@ -1568,13 +1598,50 @@ function syncRingsAndUniformsToWasmMemory(state: SimulationState): void {
     buf[base + 15] = r.hookedPegId ? 1.0 : 0.0;
   }
 
+  const rhoRing = state.config.ringDensity;
+  const rhoWater = state.config.waterDensity;
+  const netBuoyancyFactor = (rhoRing - rhoWater) / (rhoRing + 0.55 * rhoWater);
+  const netGravScale = state.gravityMagnitude * netBuoyancyFactor * 2.15;
+  const powerMult = state.config.jetPowerMultiplier;
+  const leftNoz = state.nozzles[0];
+  const rightNoz = state.nozzles[1];
+
   const uBuf = state.wasmKernel.uniformFloatView;
-  uBuf[4] = state.gravityDir.x;
-  uBuf[5] = state.gravityDir.y;
-  uBuf[6] = state.gravityDir.z;
+  uBuf[4] = state.gravityDir.x * netGravScale;
+  uBuf[5] = state.gravityDir.y * netGravScale;
+  uBuf[6] = state.gravityDir.z * netGravScale;
   uBuf[7] = state.waterAngularVel.x;
   uBuf[8] = state.waterAngularVel.y;
   uBuf[9] = state.waterAngularVel.z;
+  uBuf[10] = state.gravityDir.x;
+  uBuf[11] = state.gravityDir.y;
+  uBuf[12] = state.gravityDir.z;
+  uBuf[13] = state.config.normalDragCoeff;
+  uBuf[14] = state.config.tangentDragCoeff;
+  uBuf[15] = state.config.angularDragCoeff;
+  uBuf[16] = leftNoz.x;
+  uBuf[17] = leftNoz.y;
+  uBuf[18] = leftNoz.z;
+  uBuf[19] = state.leftPump.jetStrength * powerMult;
+  uBuf[20] =
+    (state.leftPump.globalCirculation +
+      state.leftPump.jetStrength * 0.55 +
+      state.leftPump.suctionStrength * 0.25) *
+    powerMult;
+  uBuf[21] = rightNoz.x;
+  uBuf[22] = rightNoz.y;
+  uBuf[23] = rightNoz.z;
+  uBuf[24] = state.rightPump.jetStrength * powerMult;
+  uBuf[25] =
+    (state.rightPump.globalCirculation +
+      state.rightPump.jetStrength * 0.55 +
+      state.rightPump.suctionStrength * 0.25) *
+    powerMult;
+  uBuf[26] = (state.leftPump.suctionStrength + state.rightPump.suctionStrength) * powerMult;
+  uBuf[27] = state.tank.halfHeight;
+  uBuf[28] = Math.sin(state.timeElapsed * 5.2) * 0.12 * state.config.turbulenceStrength;
+  uBuf[29] = Math.cos(state.timeElapsed * 4.7) * 0.08 * state.config.turbulenceStrength;
+  uBuf[30] = 1.0; // Enable full WASM 3D hydrodynamic + Morison + quaternion kernel
 }
 
 export function stepWaterSimulation(state: SimulationState, rawDt: number): void {
@@ -1583,8 +1650,11 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
 
   state.timeElapsed += dt;
 
-  // Track finite-difference tilt rate and damp inertial water sloshing (`waterAngularVel`)
-  const dRollRate = (state.tiltRoll - state.prevTiltRoll) / dt;
+  // Track finite-difference tilt rate (with shortest-angle wrap across ±pi) and damp inertial water sloshing (`waterAngularVel`)
+  let diffRoll = state.tiltRoll - state.prevTiltRoll;
+  if (diffRoll > Math.PI) diffRoll -= Math.PI * 2;
+  if (diffRoll < -Math.PI) diffRoll += Math.PI * 2;
+  const dRollRate = diffRoll / dt;
   const dPitchRate = (state.tiltPitch - state.prevTiltPitch) / dt;
   state.prevTiltRoll = state.tiltRoll;
   state.prevTiltPitch = state.tiltPitch;
@@ -1604,7 +1674,7 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
   state.waterAngularVel.x = THREE.MathUtils.damp(state.waterAngularVel.x, 0, 2.4, dt);
   state.waterAngularVel.y = THREE.MathUtils.damp(state.waterAngularVel.y, 0, 2.4, dt);
   state.waterAngularVel.z = THREE.MathUtils.damp(state.waterAngularVel.z, 0, 2.4, dt);
-  state.deviceAngularVel.multiplyScalar(Math.exp(-5.0 * dt));
+  state.deviceAngularVel.multiplyScalar(1.0 / (1.0 + 5.0 * dt));
 
   const pumps = [state.leftPump, state.rightPump];
   for (let i = 0; i < pumps.length; i++) {
@@ -1641,84 +1711,18 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
   const subDt = dt / subSteps;
   state.effectiveHz = Math.round(1 / Math.max(subDt, 1e-5));
 
-  const rhoRing = state.config.ringDensity;
-  const rhoWater = state.config.waterDensity;
-  const netBuoyancyFactor = (rhoRing - rhoWater) / (rhoRing + 0.55 * rhoWater);
   const wasmBuf = state.wasmKernel.ringFloatView;
 
   if (state.totalWasmStepsExecuted === 0) {
     evaluateHookedRings(state);
   }
 
+  // Sync ring states and all 31 hydrodynamic uniforms to WASM linear memory ONCE before the substep loop
+  syncRingsAndUniformsToWasmMemory(state);
+
   for (let step = 0; step < subSteps; step++) {
-    for (let i = 0; i < state.rings.length; i++) {
-      const ring = state.rings[i];
-
-      // Brisk, realistic underwater gravitational settling (low-viscosity clear water)
-      ring.velocity.addScaledVector(
-        state.gravityDir,
-        state.gravityMagnitude * netBuoyancyFactor * 2.15 * subDt
-      );
-
-      sampleWaterVelocityField(state, ring.position, _fluidVel, _fluidVorticity);
-
-      _ringNormal.set(0, 0, 1).applyQuaternion(ring.quaternion).normalize();
-
-      _relVel.copy(ring.velocity).sub(_fluidVel);
-      const relSpeed = _relVel.length();
-
-      const normalProj = _relVel.dot(_ringNormal);
-      _velNormal.copy(_ringNormal).multiplyScalar(normalProj);
-      _velTangent.copy(_relVel).sub(_velNormal);
-
-      // Morison 3D Torus Hydrodynamic Drag:
-      // Low linear drag in calm water (so water never feels viscous during settling) +
-      // strong quadratic cross-flow form drag in high-speed water jets!
-      const cN = state.config.normalDragCoeff * (1.0 + 0.78 * relSpeed);
-      const cT = state.config.tangentDragCoeff * (1.0 + 0.82 * relSpeed);
-
-      _dragForce
-        .copy(_velNormal)
-        .multiplyScalar(-cN)
-        .addScaledVector(_velTangent, -cT);
-
-      ring.velocity.addScaledVector(_dragForce, subDt);
-
-      if (relSpeed > 0.02) {
-        _crossTmp.crossVectors(_ringNormal, _relVel);
-        const attackTorqueMag = normalProj * 2.5;
-        _torque.copy(_crossTmp).multiplyScalar(attackTorqueMag);
-        ring.angularVelocity.addScaledVector(_torque, subDt);
-      }
-
-      _crossTmp.crossVectors(_ringNormal, state.gravityDir);
-      const alignDot = _ringNormal.dot(state.gravityDir);
-      ring.angularVelocity.addScaledVector(
-        _crossTmp,
-        (alignDot >= 0 ? 1.95 : -1.95) * subDt
-      );
-
-      ring.angularVelocity.addScaledVector(_fluidVorticity, 1.65 * subDt);
-
-      const angDamping = Math.exp(-state.config.angularDragCoeff * subDt);
-      ring.angularVelocity.multiplyScalar(angDamping);
-
-      if (ring.velocity.lengthSq() > 36) {
-        ring.velocity.setLength(6.0);
-      }
-      if (ring.angularVelocity.lengthSq() > 144) {
-        ring.angularVelocity.setLength(12.0);
-      }
-
-      const base = i * 16;
-      wasmBuf[base + 0] = ring.position.x;
-      wasmBuf[base + 1] = ring.position.y;
-      wasmBuf[base + 2] = ring.position.z;
-      wasmBuf[base + 3] = ring.velocity.x;
-      wasmBuf[base + 4] = ring.velocity.y;
-      wasmBuf[base + 5] = ring.velocity.z;
-    }
-
+    // Execute 3D fluid velocity sampling, Morison drag, hydrodynamic torques,
+    // quaternion integration, and position integration inside WebAssembly!
     state.lastKineticEnergy = state.wasmKernel.wasmIntegrateStep(
       state.rings.length,
       subDt,
@@ -1735,22 +1739,13 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
 
       ring.position.set(wasmBuf[base + 0], wasmBuf[base + 1], wasmBuf[base + 2]);
       ring.velocity.set(wasmBuf[base + 3], wasmBuf[base + 4], wasmBuf[base + 5]);
-
-      const wx = ring.angularVelocity.x;
-      const wy = ring.angularVelocity.y;
-      const wz = ring.angularVelocity.z;
-      const q = ring.quaternion;
-      _dq.set(
-        0.5 * (wx * q.w + wy * q.z - wz * q.y),
-        0.5 * (wy * q.w + wz * q.x - wx * q.z),
-        0.5 * (wz * q.w + wx * q.y - wy * q.x),
-        0.5 * (-wx * q.x - wy * q.y - wz * q.z)
+      ring.quaternion.set(
+        wasmBuf[base + 6],
+        wasmBuf[base + 7],
+        wasmBuf[base + 8],
+        wasmBuf[base + 9]
       );
-      q.x += _dq.x * subDt;
-      q.y += _dq.y * subDt;
-      q.z += _dq.z * subDt;
-      q.w += _dq.w * subDt;
-      q.normalize();
+      ring.angularVelocity.set(wasmBuf[base + 10], wasmBuf[base + 11], wasmBuf[base + 12]);
 
       resolveRingTankAndPegCollisionsExact(state, ring, subDt);
 
@@ -1768,15 +1763,38 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
           prevZ + stepDz * clampScale
         );
       }
+
+      // Write collision-resolved state back to WASM linear memory for the next substep
+      wasmBuf[base + 0] = ring.position.x;
+      wasmBuf[base + 1] = ring.position.y;
+      wasmBuf[base + 2] = ring.position.z;
+      wasmBuf[base + 3] = ring.velocity.x;
+      wasmBuf[base + 4] = ring.velocity.y;
+      wasmBuf[base + 5] = ring.velocity.z;
+      wasmBuf[base + 10] = ring.angularVelocity.x;
+      wasmBuf[base + 11] = ring.angularVelocity.y;
+      wasmBuf[base + 12] = ring.angularVelocity.z;
     }
 
     // Decimate Ring-to-Ring manifold solver to every 2nd substep when running ultra-high substeps (>= 16)
     if (step % 2 === 0 || subSteps < 8) {
       resolveRingToRingCollisionsExact3D(state.rings);
+      for (let i = 0; i < state.rings.length; i++) {
+        const r = state.rings[i];
+        const base = i * 16;
+        wasmBuf[base + 0] = r.position.x;
+        wasmBuf[base + 1] = r.position.y;
+        wasmBuf[base + 2] = r.position.z;
+        wasmBuf[base + 3] = r.velocity.x;
+        wasmBuf[base + 4] = r.velocity.y;
+        wasmBuf[base + 5] = r.velocity.z;
+        wasmBuf[base + 10] = r.angularVelocity.x;
+        wasmBuf[base + 11] = r.angularVelocity.y;
+        wasmBuf[base + 12] = r.angularVelocity.z;
+      }
     }
   }
 
-  syncRingsAndUniformsToWasmMemory(state);
   evaluateHookedRings(state);
 }
 
@@ -1804,8 +1822,11 @@ function applyIPCBarrierWithFriction(
   const fN = computeIPCBarrierGradient(gap, dHat, stiffness);
   if (fN <= 0) return;
 
-  // Bounded normal impulse over subDt so singularity forces never spike
-  const jN = Math.min(fN * subDt, 0.065);
+  // Second-order IPC Hessian curvature damping (Newton/Levenberg-Marquardt step regularization)
+  // prevents stiff logarithmic barrier forces from overshooting at contact singularities:
+  const hN = computeIPCBarrierHessian(gap, dHat, stiffness);
+  const newtonDampedForce = fN / (1.0 + 0.012 * hN * subDt);
+  const jN = Math.min(newtonDampedForce * subDt, 0.065);
 
   const vcX = ring.velocity.x + (ring.angularVelocity.y * armZ - ring.angularVelocity.z * armY);
   const vcY = ring.velocity.y + (ring.angularVelocity.z * armX - ring.angularVelocity.x * armZ);
@@ -2091,8 +2112,14 @@ export function resolveRingTankAndPegCollisionsExact(
       continue;
     }
 
-    // Check if the ring is threading over the conical needle tip right now
-    if (ring.hookedPegId === null && Math.abs(_ringNormal.y) > 0.28) {
+    // Check if the ring is threading downward over the conical needle tip right now
+    // (Do not re-capture if gravity points upward / phone head is down or ring is flying upward off the tip!)
+    if (
+      ring.hookedPegId === null &&
+      Math.abs(_ringNormal.y) > 0.28 &&
+      ring.velocity.y <= 0.15 &&
+      state.gravityDir.y <= 0.25
+    ) {
       const pierceY =
         ring.position.y -
         ((peg.baseX - ring.position.x) * _ringNormal.x +
@@ -2102,7 +2129,11 @@ export function resolveRingTankAndPegCollisionsExact(
       const tipCaptureBand =
         (pierceY >= pegTopY - r * 1.8 && pierceY <= pegTopY + r * 1.4) ||
         (ring.position.y >= pegTopY - r * 1.8 && ring.position.y <= pegTopY + r * 1.4);
-      if (tipCaptureBand && horizDist < holeRadius - peg.tipRadius * 0.15) {
+      if (
+        tipCaptureBand &&
+        horizDist < holeRadius - peg.tipRadius * 0.15 &&
+        computeGaussLinkingNumberRingPeg(ring, peg) >= 0.18
+      ) {
         ring.hookedPegId = peg.id;
       }
     }
@@ -2110,7 +2141,10 @@ export function resolveRingTankAndPegCollisionsExact(
     // --- CASE 1: RING IS TOPOLOGICALLY LINKED ON THIS NEEDLE (`ring.hookedPegId === peg.id`) ---
     // Uses smooth analytical Coaxial IPC Cylindrical Guide + Sliding Friction + Self-Leveling
     if (ring.hookedPegId === peg.id) {
-      if (ring.position.y > pegTopY + r * 1.45 && ring.velocity.y > 0) {
+      if (
+        ring.position.y > pegTopY + r * 0.65 &&
+        (ring.velocity.y > 0 || state.gravityDir.y > 0.1)
+      ) {
         ring.hookedPegId = null;
         continue;
       }

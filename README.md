@@ -8,7 +8,7 @@
 - **塑料环各向异性水阻** — 环面（Torus）在不同姿态下受水阻不同，翻面时升力/阻力随角度变化
 - **三维圆环与立柱碰撞** — 圆环可真正套上立柱（Gauss 环绕数判定）、可斜着卡住、可倾倒滑脱
 - **IPC C² 对数势垒** — 环与环、环与立柱的增量势能接触求解，防穿模、防抖
-- **手机陀螺仪重力感应** — 摇晃机身带动整罐水晃动，倾斜改变重力方向（`sensorBridge` 桥接 DeviceOrientation）
+- **手机陀螺仪重力感应** — 摇晃机身带动整罐水晃动，倾斜改变重力方向（`sensorBridge` 桥接 DeviceOrientation）；支持手机头朝下（倒持）时的精确重力方向
 - **无电池、无网络** — 纯物理模拟，所有计算在浏览器本地完成
 
 ## 在线游玩
@@ -28,7 +28,7 @@ npm run dev        # http://localhost:3000
 
 ```bash
 npm run lint       # TypeScript 类型检查
-npm test           # 物理引擎测试套件（11 项）
+npm test           # 物理引擎测试套件（12 项）
 npm run build      # 生产构建到 dist/
 ```
 
@@ -39,7 +39,7 @@ npm run build      # 生产构建到 dist/
 仓库通过 **GitHub Actions** 在每次 push 到 `main` 时自动构建并部署到 GitHub Pages：
 
 1. 安装依赖（`npm ci`）
-2. 运行物理单元测试
+2. 运行 TypeScript lint + 物理单元测试
 3. `vite build` 构建到 `dist/`
 4. `ghPagesHardArmorPlugin` 注入 `.nojekyll` 与 SPA 回退 `404.html`
 5. 上传 `dist/` 作为 Pages 产物并部署

@@ -111,10 +111,10 @@ export default function App() {
       if (sim && (code === 'KeyQ' || code === 'KeyE' || code === 'KeyW' || code === 'KeyS')) {
         let rollDeg = THREE.MathUtils.radToDeg(sim.tiltRoll);
         let pitchDeg = THREE.MathUtils.radToDeg(sim.tiltPitch);
-        if (code === 'KeyQ') rollDeg = Math.max(-135, rollDeg - 10);
-        if (code === 'KeyE') rollDeg = Math.min(135, rollDeg + 10);
-        if (code === 'KeyW') pitchDeg = Math.min(45, pitchDeg + 8);
-        if (code === 'KeyS') pitchDeg = Math.max(-45, pitchDeg - 8);
+        if (code === 'KeyQ') rollDeg = Math.max(-180, rollDeg - 12);
+        if (code === 'KeyE') rollDeg = Math.min(180, rollDeg + 12);
+        if (code === 'KeyW') pitchDeg = Math.min(85, pitchDeg + 8);
+        if (code === 'KeyS') pitchDeg = Math.max(-85, pitchDeg - 8);
         setGravityFromTilt(
           sim,
           THREE.MathUtils.degToRad(rollDeg),
