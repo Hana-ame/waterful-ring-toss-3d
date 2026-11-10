@@ -1,0 +1,6 @@
+{
+  "name": "Waterful Ring-Toss 3D (1976 经典掌上水压套圈机)",
+  "description": "基于 Three.js 完整复刻 1976 年 TOMY 纯物理无电池水压套圈掌机，真实模拟流体动力学、塑料环各向异性水阻、三维圆环与立柱碰撞及手机陀螺仪重力感应。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
