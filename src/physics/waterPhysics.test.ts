@@ -544,6 +544,98 @@ test('Singularity friction deceleration (奇点摩擦力减速), zero position t
   });
 });
 
+test('Fluttering + Tumbling (飘摆 + 翻滚) falling hydrodynamics, exact 3D holder tray disk collision (托盘碰撞箱), and ultra-gentle tap force (最最轻击)', () => {
+  // 1. Verify falling ring exhibits true Tumbling (翻滚: flips over around horizontal axis while descending) + Fluttering lateral drift
+  const fallState = createInitialSimulationState(1);
+  // Move pegs out of the way so we test pure free-water settling hydrodynamics from top to bottom
+  fallState.pegs = [];
+  const ring = fallState.rings[0];
+  ring.position.set(0.0, 1.65, 0.0);
+  // Start tilted at 28 degrees from horizontal with a small initial glide velocity
+  ring.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2 - 0.48, 0, 0.32));
+  ring.velocity.set(0.35, -0.2, 0.0);
+  ring.angularVelocity.set(0.0, 0.0, 1.2);
+
+  let totalHorizontalSpinRad = 0;
+  let minNy = 1.0;
+  let maxNy = -1.0;
+  let maxLateralDrift = 0;
+  const normalVec = new THREE.Vector3();
+
+  for (let f = 0; f < 130; f++) {
+    const dt = 1 / 60;
+    stepWaterSimulation(fallState, dt);
+    const omegaHoriz = Math.hypot(ring.angularVelocity.x, ring.angularVelocity.z);
+    totalHorizontalSpinRad += omegaHoriz * dt;
+
+    normalVec.set(0, 0, 1).applyQuaternion(ring.quaternion).normalize();
+    minNy = Math.min(minNy, normalVec.y);
+    maxNy = Math.max(maxNy, normalVec.y);
+    maxLateralDrift = Math.max(maxLateralDrift, Math.hypot(ring.position.x, ring.position.z));
+  }
+
+  assert.ok(
+    totalHorizontalSpinRad > Math.PI * 1.15 && minNy * maxNy < 0,
+    `Expected falling ring to tumble/flip over its horizontal axis (totalHorizontalSpinRad=${totalHorizontalSpinRad.toFixed(2)} rad, minNy=${minNy.toFixed(2)}, maxNy=${maxNy.toFixed(2)})`
+  );
+  assert.ok(
+    maxLateralDrift > 0.18,
+    `Expected falling ring to flutter/drift laterally while tumbling down (maxLateralDrift=${maxLateralDrift.toFixed(3)})`
+  );
+
+  // 2. Verify exact 3D Circle-to-Disk Holder Tray (`两根针的托盘`) side contact deflects horizontally without vertical box pop
+  const trayState = createInitialSimulationState(1);
+  trayState.gravityMagnitude = 0;
+  const leftPeg = trayState.pegs[0];
+  const cupDiskY = leftPeg.baseY + leftPeg.holderCupY - 0.012;
+  const trayRing = trayState.rings[0];
+  trayRing.hookedPegId = null;
+  trayRing.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)); // horizontal ring approaching tray rim from the left
+  const startX =
+    leftPeg.baseX - (leftPeg.holderCupRadius + trayRing.majorRadius + trayRing.minorRadius + 0.04);
+  trayRing.position.set(startX, cupDiskY, leftPeg.baseZ);
+  trayRing.velocity.set(1.8, 0, 0);
+
+  for (let f = 0; f < 15; f++) {
+    stepWaterSimulation(trayState, 1 / 60);
+  }
+
+  assert.equal(
+    trayRing.hookedPegId,
+    null,
+    'Unhooked ring hitting the side/underside of the holder tray must NEVER be falsely marked as hooked'
+  );
+  assert.ok(
+    trayRing.velocity.x < 0.2 && Math.abs(trayRing.velocity.y) < 0.35,
+    `Ring hitting side rim of holder tray should be deflected radially without a huge vertical box pop (vx=${trayRing.velocity.x}, vy=${trayRing.velocity.y})`
+  );
+
+  // 3. Verify ultra-gentle minimum tap (`最最轻击` force = 0.18 for 2 frames) produces a subtle, gentle lift (< 0.25m)
+  const gentleTapState = createInitialSimulationState(1);
+  const leftNoz = gentleTapState.nozzles[0];
+  const tapRing = gentleTapState.rings[0];
+  const initialY = leftNoz.y + 0.28;
+  tapRing.position.set(leftNoz.x, initialY, leftNoz.z);
+  tapRing.velocity.set(0, 0, 0);
+
+  setPumpInput(gentleTapState, 'left', true, 0.18);
+  stepWaterSimulation(gentleTapState, 1 / 60);
+  stepWaterSimulation(gentleTapState, 1 / 60);
+  setPumpInput(gentleTapState, 'left', false);
+
+  let peakY = initialY;
+  for (let f = 0; f < 25; f++) {
+    stepWaterSimulation(gentleTapState, 1 / 60);
+    peakY = Math.max(peakY, tapRing.position.y);
+  }
+  const gentleLift = peakY - initialY;
+  assert.ok(
+    gentleLift > 0.005 && gentleLift < 0.26,
+    `Expected ultra-light tap (0.18) to produce a delicate, gentle lift in (0.005, 0.26), got ${gentleLift}`
+  );
+});
+
+
 
 
 

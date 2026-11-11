@@ -107,10 +107,8 @@ export function buildTomyConsoleRig(
 
   const waterSurfaceMesh = new THREE.Mesh(waterSurfaceGeo, waterSurfaceMat);
   waterSurfaceMesh.position.set(0, baseSurfaceY, 0);
-  waterSurfaceMesh.renderOrder = 4;
-  rootGroup.add(waterSurfaceMesh);
+  waterSurfaceMesh.visible = false;
 
-  // Crisp glowing front meniscus wave line across the top of the water
   const meniscusRibbonGeo = new THREE.PlaneGeometry(fullBleedSurfaceWidth, 0.024, WAVE_NX - 1, 1);
   const meniscusRibbonMat = new THREE.MeshBasicMaterial({
     color: 0x7dd3fc,
@@ -122,8 +120,7 @@ export function buildTomyConsoleRig(
   });
   const meniscusRibbonMesh = new THREE.Mesh(meniscusRibbonGeo, meniscusRibbonMat);
   meniscusRibbonMesh.position.set(0, baseSurfaceY, tank.halfDepth * 0.85);
-  meniscusRibbonMesh.renderOrder = 5;
-  rootGroup.add(meniscusRibbonMesh);
+  meniscusRibbonMesh.visible = false;
 
   // --- 2. Bottom Left & Right Upward Jet Nozzles (`喷水口`) + Separate Return Intake Vents (`独立回水口`) ---
   const nozzleGroups: THREE.Group[] = [];
@@ -152,13 +149,19 @@ export function buildTomyConsoleRig(
   centerIntakeMesh.position.set(0, -tank.halfHeight + 0.025, 0);
   rootGroup.add(centerIntakeMesh);
 
-  // --- 3. Submerged 3D Tapered Target Needles (`立柱针`) ---
+  // --- 3. Submerged 3D Tapered Target Needles (`立柱针`) & Exact 1:1 Holder Tray Disks (`托盘`) ---
   DEFAULT_PEGS.forEach((peg) => {
     const pegGroup = new THREE.Group();
     pegGroup.position.set(peg.baseX, peg.baseY, peg.baseZ);
 
-    const shaftGeo = new THREE.CylinderGeometry(peg.tipRadius, peg.baseRadius, peg.height, 24);
-    shaftGeo.translate(0, peg.height / 2, 0);
+    const activeShaftHeight = peg.height - peg.holderCupY;
+    const shaftGeo = new THREE.CylinderGeometry(
+      peg.tipRadius,
+      peg.baseRadius,
+      activeShaftHeight,
+      24
+    );
+    shaftGeo.translate(0, peg.holderCupY + activeShaftHeight / 2, 0);
     const shaftMesh = new THREE.Mesh(shaftGeo, pegMat);
     shaftMesh.castShadow = !isSoftwareGl;
     pegGroup.add(shaftMesh);
@@ -168,14 +171,15 @@ export function buildTomyConsoleRig(
     tipMesh.position.y = peg.height;
     pegGroup.add(tipMesh);
 
+    // Rounded holder tray disk matching the exact 3D Circle-to-Disk physics geometry (cupDiskY = holderCupY - 0.012, rimRadius = 0.024)
     const cupGeo = new THREE.CylinderGeometry(
       peg.holderCupRadius,
-      peg.holderCupRadius * 0.65,
-      0.075,
-      24
+      peg.holderCupRadius * 0.88,
+      0.048,
+      28
     );
     const cupMesh = new THREE.Mesh(cupGeo, pegMat);
-    cupMesh.position.y = peg.holderCupY;
+    cupMesh.position.y = peg.holderCupY - 0.012;
     cupMesh.castShadow = !isSoftwareGl;
     pegGroup.add(cupMesh);
 

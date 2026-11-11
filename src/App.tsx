@@ -68,7 +68,7 @@ export default function App() {
       if (ref.current === null) {
         ref.current = performance.now();
         waterAudio.playPumpPress(side);
-        setPumpInput(sim, side, true, 0.54);
+        setPumpInput(sim, side, true, 0.18);
       }
     },
     [ensureSensorPermissionOnGesture]
@@ -325,16 +325,18 @@ export default function App() {
 
       const activeSim = simStateRef.current;
       if (activeSim) {
-        // Touch-duration force control: holding the button compresses the bellows over a finite stroke (0.54 -> 1.12 over 240ms).
+        // Touch-duration force control: ultra-light tap starts at 0.18; holding longer ramps progressively (0.18 -> 1.12 over 280ms).
         // Once targetDepth reaches 1.12, the bellows bottoms out and water stops spraying even if held!
         if (leftPressStartRef.current !== null) {
           const holdSec = (now - leftPressStartRef.current) / 1000;
-          const force = Math.min(1.12, 0.54 + (holdSec / 0.24) * 0.58);
+          const tNorm = Math.min(1.0, holdSec / 0.28);
+          const force = Math.min(1.12, 0.18 + tNorm * (0.45 + 0.55 * tNorm) * 0.94);
           setPumpInput(activeSim, 'left', true, force);
         }
         if (rightPressStartRef.current !== null) {
           const holdSec = (now - rightPressStartRef.current) / 1000;
-          const force = Math.min(1.12, 0.54 + (holdSec / 0.24) * 0.58);
+          const tNorm = Math.min(1.0, holdSec / 0.28);
+          const force = Math.min(1.12, 0.18 + tNorm * (0.45 + 0.55 * tNorm) * 0.94);
           setPumpInput(activeSim, 'right', true, force);
         }
 

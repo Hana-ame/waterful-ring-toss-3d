@@ -206,17 +206,17 @@ export const DEFAULT_NOZZLES: NozzleSpec[] = [
 export const DEFAULT_PHYSICS_CONFIG: PhysicsConfig = {
   ringDensity: 1.28,
   waterDensity: 1.0,
-  normalDragCoeff: 1.72,
-  tangentDragCoeff: 0.92,
-  angularDragCoeff: 1.45,
+  normalDragCoeff: 2.05,
+  tangentDragCoeff: 0.78,
+  angularDragCoeff: 0.65,
   jetPowerMultiplier: 1.0,
   turbulenceStrength: 0.85,
   wasmSubsteps: 24,
 };
 
 export const PUMP_FORCE_VALUES: Record<PumpForcePreset, number> = {
-  light: 0.48,
-  medium: 0.76,
+  light: 0.22,
+  medium: 0.64,
   heavy: 1.05,
 };
 
@@ -747,20 +747,23 @@ export function setPumpInput(
   }
 
   if (isHeld) {
-    const clampedDepth = THREE.MathUtils.clamp(normalizedForce, 0.3, 1.15);
+    const clampedDepth = THREE.MathUtils.clamp(normalizedForce, 0.08, 1.15);
     if (!pump.targetHeld) {
       pump.pressCount += 1;
-      pump.jetStrength = Math.min(1.75, pump.jetStrength + 0.96 * clampedDepth);
+      // Progressive soft-start impulse: ultra-light taps (clampedDepth ~ 0.18..0.24) produce a delicate gentle puff,
+      // while deeper presses scale up smoothly to full power.
+      const softKickScale = 0.72 + 0.24 * Math.min(1.0, clampedDepth);
+      pump.jetStrength = Math.min(1.75, pump.jetStrength + softKickScale * clampedDepth);
       pump.suctionStrength *= 0.15;
       pump.globalCirculation = Math.min(
         1.9,
-        pump.globalCirculation + 0.68 * clampedDepth
+        pump.globalCirculation + 0.62 * clampedDepth
       );
       pump.targetDepth = clampedDepth;
     } else {
       const deltaForce = Math.max(0, clampedDepth - pump.targetDepth);
       if (deltaForce > 0) {
-        pump.jetStrength = Math.min(1.75, pump.jetStrength + 1.08 * deltaForce);
+        pump.jetStrength = Math.min(1.75, pump.jetStrength + 1.14 * deltaForce);
         pump.globalCirculation = Math.min(
           1.9,
           pump.globalCirculation + 0.76 * deltaForce
@@ -770,9 +773,13 @@ export function setPumpInput(
     }
     pump.targetHeld = true;
   } else {
-    if (pump.targetHeld || pump.depressed > 0.1) {
-      const releaseVolume = Math.max(0.25, pump.depressed);
+    if (pump.targetHeld || pump.depressed > 0.06) {
+      const releaseVolume = Math.max(0.18, pump.depressed);
       pump.suctionStrength = Math.min(1.25, pump.suctionStrength + releaseVolume * 0.82);
+      // If released early during a quick light tap, immediately curtail residual upward jet
+      if (pump.depressed < 0.35) {
+        pump.jetStrength *= 0.55;
+      }
     }
     pump.targetHeld = false;
     pump.targetDepth = 0;
@@ -832,17 +839,19 @@ export function setGravityFromTilt(
   state.tiltRoll = clampedRoll;
   state.tiltPitch = clampedPitch;
 
-  // Excites inertial counter-sloshing in the water body whenever the tank is tilted
+  // Rectangular water tank coupling (`方形的水体本身是会随着转动被方形的限制框带动的`):
+  // The 4 flat walls of the rectangular frame positively carry the bulk water along with the box;
+  // only a mild irrotational core eddy lags in the interior, damped rapidly by the flat walls.
   if (Math.abs(deltaRoll) > 1e-5 || Math.abs(deltaPitch) > 1e-5) {
     state.waterAngularVel.z = THREE.MathUtils.clamp(
-      state.waterAngularVel.z - deltaRoll * 3.2,
-      -6.0,
-      6.0
+      state.waterAngularVel.z - deltaRoll * 0.55,
+      -3.5,
+      3.5
     );
     state.waterAngularVel.x = THREE.MathUtils.clamp(
-      state.waterAngularVel.x - deltaPitch * 2.8,
-      -6.0,
-      6.0
+      state.waterAngularVel.x - deltaPitch * 0.45,
+      -3.5,
+      3.5
     );
   }
 
@@ -1006,7 +1015,9 @@ export function sampleWaterVelocityField(
     }
   }
 
-  // --- D. GYROSCOPE & TILT-INDUCED WATER INERTIAL SLOSHING (`ω_water × r`) ---
+  // --- D. RECTANGULAR TANK BOUNDARY-CONFINED SLOSHING (`方形限制框带动水体`) ---
+  // Near the flat rectangular walls ((x/W)^2 -> 1), the rectangular frame carries the water directly with it
+  // so relative sloshing vanishes at the walls and only a gentle Stokes core eddy exists near the center.
   const wx = state.waterAngularVel.x;
   const wy = state.waterAngularVel.y;
   const wz = state.waterAngularVel.z;
@@ -1015,20 +1026,18 @@ export function sampleWaterVelocityField(
     const sloshVy = wz * pos.x - wx * pos.z;
     const sloshVz = wx * pos.y - wy * pos.x;
 
-    const radialEnvelope =
-      1.0 /
-      (1.0 +
-        (pos.x * pos.x) / (state.tank.halfWidthTop * state.tank.halfWidthTop * 1.35) +
-        (pos.y * pos.y) / (state.tank.halfHeight * state.tank.halfHeight * 1.35));
-    const gain = 0.75 * radialEnvelope;
+    const xRatioSq = (pos.x * pos.x) / (state.tank.halfWidthTop * state.tank.halfWidthTop);
+    const yRatioSq = (pos.y * pos.y) / (state.tank.halfHeight * state.tank.halfHeight);
+    const wallConfinement = Math.max(0.15, (1.0 - 0.65 * xRatioSq) * (1.0 - 0.35 * yRatioSq));
+    const gain = 0.62 * wallConfinement;
 
     outVel.x += sloshVx * gain;
     outVel.y += sloshVy * gain;
     outVel.z += sloshVz * gain;
 
-    outVorticity.x += 1.5 * wx * radialEnvelope;
-    outVorticity.y += 1.5 * wy * radialEnvelope;
-    outVorticity.z += 1.5 * wz * radialEnvelope;
+    outVorticity.x += 1.2 * wx * wallConfinement;
+    outVorticity.y += 1.2 * wy * wallConfinement;
+    outVorticity.z += 1.2 * wz * wallConfinement;
   }
 }
 
@@ -1517,11 +1526,12 @@ export function evaluateHookedRings(state: SimulationState): number {
     _ringNormal.set(0, 0, 1).applyQuaternion(ring.quaternion).normalize();
     const absNy = Math.abs(_ringNormal.y);
 
-    // 1. If already topologically hooked on a peg, verify it is still on the peg shaft below the tip
+    // 1. If already topologically hooked on a peg, verify it is still on the peg shaft strictly above the holder tray (`cupY`)
     if (ring.hookedPegId !== null) {
       const currentPeg = state.pegs.find((p) => p.id === ring.hookedPegId);
       if (currentPeg) {
         const pegTopY = currentPeg.baseY + currentPeg.height;
+        const cupY = currentPeg.baseY + currentPeg.holderCupY;
         const horizDist = Math.hypot(
           ring.position.x - currentPeg.baseX,
           ring.position.z - currentPeg.baseZ
@@ -1529,7 +1539,7 @@ export function evaluateHookedRings(state: SimulationState): number {
         const linkingNumber = computeGaussLinkingNumberRingPeg(ring, currentPeg);
         if (
           ring.position.y <= pegTopY + ring.minorRadius * 1.45 &&
-          ring.position.y >= currentPeg.baseY - 0.1 &&
+          ring.position.y >= cupY - ring.minorRadius * 0.35 &&
           horizDist <= holeRadius + currentPeg.baseRadius + 0.04 &&
           absNy >= 0.28 &&
           linkingNumber >= 0.18
@@ -1541,12 +1551,17 @@ export function evaluateHookedRings(state: SimulationState): number {
       ring.hookedPegId = null;
     }
 
-    // 2. Otherwise check if the ring plane is pierced by a peg shaft AND topologically linked via Gauss Linking Integral
+    // 2. Otherwise check if the ring plane is pierced by a peg shaft strictly above the holder tray (`cupY`)
+    // AND topologically linked via Gauss Linking Integral
     if (absNy < 0.28) continue;
 
     for (let p = 0; p < state.pegs.length; p++) {
       const peg = state.pegs[p];
       const pegTopY = peg.baseY + peg.height;
+      const cupY = peg.baseY + peg.holderCupY;
+
+      // Never mark a ring below the holder tray (`cupY`) as hooked!
+      if (ring.position.y < cupY) continue;
 
       const dx = peg.baseX - ring.position.x;
       const dz = peg.baseZ - ring.position.z;
@@ -1554,7 +1569,7 @@ export function evaluateHookedRings(state: SimulationState): number {
       const pierceY =
         ring.position.y - (dx * _ringNormal.x + dz * _ringNormal.z) / _ringNormal.y;
 
-      if (pierceY >= peg.baseY + peg.holderCupY - 0.14 && pierceY <= pegTopY - 0.01) {
+      if (pierceY >= cupY && pierceY <= pegTopY - 0.01) {
         const dy = pierceY - ring.position.y;
         const distInRingPlane = Math.hypot(dx, dy, dz);
         const hFrac = THREE.MathUtils.clamp((pierceY - peg.baseY) / peg.height, 0, 1);
@@ -1650,31 +1665,15 @@ export function stepWaterSimulation(state: SimulationState, rawDt: number): void
 
   state.timeElapsed += dt;
 
-  // Track finite-difference tilt rate (with shortest-angle wrap across ±pi) and damp inertial water sloshing (`waterAngularVel`)
-  let diffRoll = state.tiltRoll - state.prevTiltRoll;
-  if (diffRoll > Math.PI) diffRoll -= Math.PI * 2;
-  if (diffRoll < -Math.PI) diffRoll += Math.PI * 2;
-  const dRollRate = diffRoll / dt;
-  const dPitchRate = (state.tiltPitch - state.prevTiltPitch) / dt;
+  // Track finite-difference tilt rate (with shortest-angle wrap across ±pi) and damp rectangular-cavity water sloshing (`waterAngularVel`)
   state.prevTiltRoll = state.tiltRoll;
   state.prevTiltPitch = state.tiltPitch;
 
-  if (Math.abs(dRollRate) > 0.01 || Math.abs(dPitchRate) > 0.01) {
-    state.waterAngularVel.z = THREE.MathUtils.clamp(
-      state.waterAngularVel.z - dRollRate * dt * 2.5,
-      -6.0,
-      6.0
-    );
-    state.waterAngularVel.x = THREE.MathUtils.clamp(
-      state.waterAngularVel.x - dPitchRate * dt * 2.2,
-      -6.0,
-      6.0
-    );
-  }
-  state.waterAngularVel.x = THREE.MathUtils.damp(state.waterAngularVel.x, 0, 2.4, dt);
-  state.waterAngularVel.y = THREE.MathUtils.damp(state.waterAngularVel.y, 0, 2.4, dt);
-  state.waterAngularVel.z = THREE.MathUtils.damp(state.waterAngularVel.z, 0, 2.4, dt);
-  state.deviceAngularVel.multiplyScalar(1.0 / (1.0 + 5.0 * dt));
+  // Rectangular frame walls rapidly arrest residual relative water rotation (`方形限制框阻尼`)
+  state.waterAngularVel.x = THREE.MathUtils.damp(state.waterAngularVel.x, 0, 6.8, dt);
+  state.waterAngularVel.y = THREE.MathUtils.damp(state.waterAngularVel.y, 0, 6.8, dt);
+  state.waterAngularVel.z = THREE.MathUtils.damp(state.waterAngularVel.z, 0, 6.8, dt);
+  state.deviceAngularVel.multiplyScalar(1.0 / (1.0 + 6.0 * dt));
 
   const pumps = [state.leftPump, state.rightPump];
   for (let i = 0; i < pumps.length; i++) {
@@ -2209,21 +2208,22 @@ export function resolveRingTankAndPegCollisionsExact(
       ring.angularVelocity.z = ring.angularVelocity.z * 0.84 + levelTorqueZ * 1.75;
       ring.angularVelocity.y *= 0.92;
 
-      // Smooth Holder Cup Support (`cupY`) at the bottom of the needle
-      const minHookedY = cupY + r + 0.012;
+      // Smooth Holder Cup Disk Support (`cupY`) at the bottom of the needle (accounts for ring tilt so tilted rims never clip the tray!)
+      const sinTilt = Math.sqrt(Math.max(0.0, 1.0 - _ringNormal.y * _ringNormal.y));
+      const minHookedY = cupY + r + 0.012 + R * sinTilt * 0.55;
       const cupGap = ring.position.y - minHookedY;
       if (cupGap < ipcDHat && state.gravityDir.y < 0) {
         applyIPCBarrierWithFriction(
           ring,
           0,
-          -r,
+          -r - R * sinTilt * 0.55,
           0,
           0,
           1,
           0,
           cupGap,
           ipcDHat,
-          0.42,
+          0.48,
           0.18,
           invMass,
           invInertia,
@@ -2232,7 +2232,7 @@ export function resolveRingTankAndPegCollisionsExact(
       }
       if (ring.position.y < minHookedY) {
         const penY = minHookedY - ring.position.y;
-        _posDeltaAccum.y += Math.min(0.0045, penY * 0.38);
+        _posDeltaAccum.y += Math.min(0.0045, penY * 0.42);
         if (ring.velocity.y < 0) {
           ring.velocity.y *= -0.12;
         }
@@ -2243,23 +2243,23 @@ export function resolveRingTankAndPegCollisionsExact(
     }
 
     // --- CASE 2: RING IS UNHOOKED (`ring.hookedPegId !== peg.id`) ---
-    // Exact Analytical 3D Circle vs. Needle Segment with Singularity Friction & Zero Teleportation
-    _segB0.set(peg.baseX, peg.baseY, peg.baseZ);
+    // 2A. Exact Analytical 3D Circle vs. Needle Shaft Segment [cupY, pegTopY] (strictly above the holder tray!)
+    _segB0.set(peg.baseX, cupY, peg.baseZ);
     _segB1.set(peg.baseX, pegTopY, peg.baseZ);
 
     let bestDistSq = Infinity;
-    let bestPegY = THREE.MathUtils.clamp(ring.position.y, peg.baseY, pegTopY);
+    let bestPegY = THREE.MathUtils.clamp(ring.position.y, cupY, pegTopY);
     for (let k = 0; k < NUM_BI_SEEDS; k++) {
       const c = BI_SEED_COS[k] * R;
       const sn = BI_SEED_SIN[k] * R;
       const py = THREE.MathUtils.clamp(
         ring.position.y + _ringAxisU.y * c + _ringAxisV.y * sn,
-        peg.baseY,
+        cupY,
         pegTopY
       );
       _closestB.set(peg.baseX, py, peg.baseZ);
       closestPointOnCircle3D(ring.position, _ringNormal, _ringAxisU, R, _closestB, _contactPt);
-      const cy = THREE.MathUtils.clamp(_contactPt.y, peg.baseY, pegTopY);
+      const cy = THREE.MathUtils.clamp(_contactPt.y, cupY, pegTopY);
       const d2 =
         (_contactPt.x - peg.baseX) * (_contactPt.x - peg.baseX) +
         (_contactPt.y - cy) * (_contactPt.y - cy) +
@@ -2280,26 +2280,26 @@ export function resolveRingTankAndPegCollisionsExact(
     const projZ = qDz - qDotN * _ringNormal.z;
     const inPlaneAxisDist = Math.hypot(projX, projY, projZ);
 
-    // 2a. Torus Medial-Axis Singularity Frictional Deceleration ("算出奇点时考虑一下可以有摩擦力（减速）"):
-    // When the needle tip/axis is near the torus medial-axis singularity (inPlaneAxisDist < 0.55 * R),
-    // apply smooth viscous-frictional deceleration so the ring slows down smoothly instead of whipping or jumping!
+    // Torus Medial-Axis Singularity Frictional Deceleration ("算出奇点时考虑一下可以有摩擦力（减速）"):
     if (inPlaneAxisDist < R * 0.55 && Math.abs(ring.position.y - pegTopY) < R + r * 1.8) {
       const singProximity = 1.0 - inPlaneAxisDist / (R * 0.55);
-      const singFrictionDamp = Math.exp(-3.6 * singProximity * subDt);
+      const singFrictionDamp = Math.exp(-3.8 * singProximity * subDt);
       ring.velocity.x *= singFrictionDamp;
       ring.velocity.z *= singFrictionDamp;
-      ring.angularVelocity.multiplyScalar(Math.exp(-4.2 * singProximity * subDt));
+      ring.angularVelocity.multiplyScalar(Math.exp(-5.8 * singProximity * subDt));
     }
 
-    // Helper to resolve a candidate point on the 3D circle against the needle shaft/tip without singularity jumps
+    // Helper to resolve a candidate point on the 3D circle against the needle shaft/tip [cupY, pegTopY]
     const resolveCirclePointAgainstNeedle = (
       ptX: number,
       ptY: number,
       ptZ: number,
       weight: number
     ) => {
-      const clampedY = THREE.MathUtils.clamp(ptY, peg.baseY, pegTopY);
-      const hFrac = (clampedY - peg.baseY) / peg.height;
+      // Only resolve against the needle shaft if the point is above the underside of the holder tray
+      if (ptY < cupY - r * 0.45) return;
+      const clampedY = THREE.MathUtils.clamp(ptY, cupY, pegTopY);
+      const hFrac = THREE.MathUtils.clamp((clampedY - peg.baseY) / peg.height, 0, 1);
       const pegRadiusAtY = THREE.MathUtils.lerp(peg.baseRadius, peg.tipRadius, hFrac);
 
       const dx = ptX - peg.baseX;
@@ -2308,9 +2308,11 @@ export function resolveRingTankAndPegCollisionsExact(
       const dist = Math.hypot(dx, dy, dz);
       const minDist = r + pegRadiusAtY;
 
-      // Detect if an unhooked ring's leading rim is attempting to cross the needle shaft below the tip
+      // Detect if an unhooked ring's leading rim is attempting to cross the needle shaft between cupY and pegTopY
       const isShaftCrossover =
-        clampedY < pegTopY - r * 0.65 && dx * dxCenter + dz * dzCenter < 0;
+        ptY >= cupY &&
+        clampedY < pegTopY - r * 0.65 &&
+        dx * dxCenter + dz * dzCenter < 0;
 
       const surfaceGap = isShaftCrossover ? -(minDist + dist) : dist - minDist;
       if (surfaceGap >= ipcDHat) return;
@@ -2333,7 +2335,6 @@ export function resolveRingTankAndPegCollisionsExact(
       const armY = ptY - ring.position.y;
       const armZ = ptZ - ring.position.z;
 
-      // Smooth C^2 IPC repulsive barrier + C^1 mollified tangential friction deceleration
       applyIPCBarrierWithFriction(
         ring,
         armX,
@@ -2345,7 +2346,7 @@ export function resolveRingTankAndPegCollisionsExact(
         Math.max(0.0, surfaceGap),
         ipcDHat,
         0.52 * weight,
-        0.18, // Physical friction at needle tip & shaft singularity
+        0.18,
         invMass,
         invInertia,
         subDt
@@ -2363,7 +2364,7 @@ export function resolveRingTankAndPegCollisionsExact(
           nz,
           pen,
           0.24,
-          0.18, // Physical Coulomb friction decelerates tangential slip and induces rolling torque
+          0.18,
           invMass,
           invInertia,
           0.26 * weight,
@@ -2372,13 +2373,11 @@ export function resolveRingTankAndPegCollisionsExact(
       }
     };
 
-    // Refine primary analytical closest point on circle
+    // Refine primary analytical closest point on circle to the needle shaft
     _closestB.set(peg.baseX, bestPegY, peg.baseZ);
     closestPointOnCircle3D(ring.position, _ringNormal, _ringAxisU, R, _closestB, _contactPt);
 
     if (inPlaneAxisDist < R * 0.45) {
-      // Near the torus medial-axis singularity: blend the primary point with 4 symmetric cardinal circle points
-      // so the contact point never jumps by 2R when crossing the medial axis!
       const primaryW = Math.max(0.25, inPlaneAxisDist / (R * 0.45));
       const symW = (1.0 - primaryW) * 0.25;
       resolveCirclePointAgainstNeedle(_contactPt.x, _contactPt.y, _contactPt.z, primaryW);
@@ -2396,36 +2395,132 @@ export function resolveRingTankAndPegCollisionsExact(
       resolveCirclePointAgainstNeedle(_contactPt.x, _contactPt.y, _contactPt.z, 1.0);
     }
 
-    // Analytical Holder Cup Rim Collision for Unhooked Rings
-    const dyCup = _contactPt.y - cupY;
-    const cupThickness = 0.04;
-    const minDistY = r + cupThickness;
-    if (Math.abs(dyCup) < minDistY) {
-      const dxCup = _contactPt.x - peg.baseX;
-      const dzCup = _contactPt.z - peg.baseZ;
-      const radialCup = Math.hypot(dxCup, dzCup);
-      if (radialCup < peg.holderCupRadius + r) {
-        const signY = dyCup >= 0 ? 1 : -1;
-        const pen = minDistY - Math.abs(dyCup);
-        const armX = _contactPt.x - ring.position.x;
-        const armY = _contactPt.y - ring.position.y;
-        const armZ = _contactPt.z - ring.position.z;
-        applyContactImpulse(
+    // 2B. Exact 3D Circle-to-Disk (Rounded Holder Tray `托盘`) Shortest Distance & Contact Solver:
+    // Models the holder tray at (peg.baseX, cupDiskY, peg.baseZ) as a true 3D rounded circular disk
+    // (core disk radius = holderCupRadius - cupRimRadius, rounded rim radius = cupRimRadius = 0.024).
+    // Eliminates the old axis-aligned vertical-only box check that popped rings vertically on side contact!
+    const cupRimRadius = 0.024;
+    const cupDiskY = cupY - 0.012;
+    const diskCoreR = Math.max(0.04, peg.holderCupRadius - cupRimRadius);
+
+    if (Math.abs(ring.position.y - cupDiskY) <= R + r + cupRimRadius + 0.08) {
+      let bestDiskDistSq = Infinity;
+      let bestRingPtX = _contactPt.x;
+      let bestRingPtY = _contactPt.y;
+      let bestRingPtZ = _contactPt.z;
+      let bestDiskPtX = peg.baseX;
+      let bestDiskPtY = cupDiskY;
+      let bestDiskPtZ = peg.baseZ;
+
+      for (let k = 0; k < NUM_BI_SEEDS; k++) {
+        const c = BI_SEED_COS[k] * R;
+        const sn = BI_SEED_SIN[k] * R;
+        let rx = ring.position.x + _ringAxisU.x * c + _ringAxisV.x * sn;
+        let ry = ring.position.y + _ringAxisU.y * c + _ringAxisV.y * sn;
+        let rz = ring.position.z + _ringAxisU.z * c + _ringAxisV.z * sn;
+
+        // 2 iterations of alternating projection between 3D ring circle and 3D horizontal tray disk
+        let qx = peg.baseX;
+        let qz = peg.baseZ;
+        for (let iter = 0; iter < 2; iter++) {
+          const dxD = rx - peg.baseX;
+          const dzD = rz - peg.baseZ;
+          const radD = Math.hypot(dxD, dzD);
+          if (radD > diskCoreR && radD > 1e-6) {
+            qx = peg.baseX + (dxD / radD) * diskCoreR;
+            qz = peg.baseZ + (dzD / radD) * diskCoreR;
+          } else {
+            qx = rx;
+            qz = rz;
+          }
+          _closestB.set(qx, cupDiskY, qz);
+          closestPointOnCircle3D(ring.position, _ringNormal, _ringAxisU, R, _closestB, _closestA);
+          rx = _closestA.x;
+          ry = _closestA.y;
+          rz = _closestA.z;
+        }
+
+        const dxFinal = rx - peg.baseX;
+        const dzFinal = rz - peg.baseZ;
+        const radFinal = Math.hypot(dxFinal, dzFinal);
+        if (radFinal > diskCoreR && radFinal > 1e-6) {
+          qx = peg.baseX + (dxFinal / radFinal) * diskCoreR;
+          qz = peg.baseZ + (dzFinal / radFinal) * diskCoreR;
+        } else {
+          qx = rx;
+          qz = rz;
+        }
+
+        const d2 =
+          (rx - qx) * (rx - qx) +
+          (ry - cupDiskY) * (ry - cupDiskY) +
+          (rz - qz) * (rz - qz);
+        if (d2 < bestDiskDistSq) {
+          bestDiskDistSq = d2;
+          bestRingPtX = rx;
+          bestRingPtY = ry;
+          bestRingPtZ = rz;
+          bestDiskPtX = qx;
+          bestDiskPtY = cupDiskY;
+          bestDiskPtZ = qz;
+        }
+      }
+
+      const dxCup = bestRingPtX - bestDiskPtX;
+      const dyCup = bestRingPtY - bestDiskPtY;
+      const dzCup = bestRingPtZ - bestDiskPtZ;
+      const distCup = Math.hypot(dxCup, dyCup, dzCup);
+      const minCupDist = r + cupRimRadius;
+      const cupSurfaceGap = distCup - minCupDist;
+
+      if (cupSurfaceGap < ipcDHat) {
+        const regNx = dxCup + (horizDist > 1e-5 ? (dxCenter / horizDist) * 0.002 : 0.0);
+        const regNy = dyCup + (ring.position.y >= cupDiskY ? 0.002 : -0.002);
+        const regNz = dzCup + (horizDist > 1e-5 ? (dzCenter / horizDist) * 0.002 : 0.0);
+        const regLen = Math.hypot(regNx, regNy, regNz) || 1.0;
+        const nxCup = regNx / regLen;
+        const nyCup = regNy / regLen;
+        const nzCup = regNz / regLen;
+
+        const armX = bestRingPtX - ring.position.x;
+        const armY = bestRingPtY - ring.position.y;
+        const armZ = bestRingPtZ - ring.position.z;
+
+        applyIPCBarrierWithFriction(
           ring,
           armX,
           armY,
           armZ,
-          0,
-          signY,
-          0,
-          pen,
-          0.2,
+          nxCup,
+          nyCup,
+          nzCup,
+          Math.max(0.0, cupSurfaceGap),
+          ipcDHat,
+          0.48,
           0.18,
           invMass,
           invInertia,
-          0.24,
-          _posDeltaAccum
+          subDt
         );
+
+        if (cupSurfaceGap < 0) {
+          applyContactImpulse(
+            ring,
+            armX,
+            armY,
+            armZ,
+            nxCup,
+            nyCup,
+            nzCup,
+            -cupSurfaceGap,
+            0.2,
+            0.18,
+            invMass,
+            invInertia,
+            0.25,
+            _posDeltaAccum
+          );
+        }
       }
     }
   }
