@@ -633,6 +633,37 @@ test('Fluttering + Tumbling (飘摆 + 翻滚) falling hydrodynamics, exact 3D ho
     gentleLift > 0.005 && gentleLift < 0.26,
     `Expected ultra-light tap (0.18) to produce a delicate, gentle lift in (0.005, 0.26), got ${gentleLift}`
   );
+
+  // 4. Verify ZERO artificial coaxial leveling torque on a hooked ring in mid-air within aperture clearance,
+  // and real 3D contact-driven leveling (r x J) when resting on the tapered shaft & holder tray
+  const hookedState = createInitialSimulationState(1);
+  hookedState.gravityMagnitude = 0;
+  hookedState.config.turbulenceStrength = 0;
+  const hPeg = hookedState.pegs[0];
+  const hRing = hookedState.rings[0];
+  hRing.hookedPegId = hPeg.id;
+  // Place ring centered on the thin upper needle shaft, tilted by 20 degrees (well within hole clearance R*cos(20)-r = 0.115 > r_peg + ipcDHat)
+  hRing.position.set(hPeg.baseX, hPeg.baseY + hPeg.height * 0.78, hPeg.baseZ);
+  hRing.velocity.set(0, 0, 0);
+  hRing.angularVelocity.set(0, 0, 0);
+  hRing.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2 - 0.35, 0, 0));
+
+  stepWaterSimulation(hookedState, 1 / 60);
+  assert.ok(
+    Math.hypot(hRing.angularVelocity.x, hRing.angularVelocity.z) < 1e-4,
+    `Hooked ring in mid-air within hole clearance must NOT experience any artificial leveling torque (got omega=${Math.hypot(hRing.angularVelocity.x, hRing.angularVelocity.z)})`
+  );
+
+  // Now turn on gravity so the tilted hooked ring slides down the tapered shaft onto the holder tray and levels via real 3D contact (r x J)
+  hookedState.gravityMagnitude = 9.81;
+  for (let f = 0; f < 90; f++) {
+    stepWaterSimulation(hookedState, 1 / 60);
+  }
+  normalVec.set(0, 0, 1).applyQuaternion(hRing.quaternion).normalize();
+  assert.ok(
+    Math.abs(normalVec.y) > 0.94,
+    `Hooked ring resting on holder tray should level naturally via 3D contact torques (r x J), got |n.y|=${Math.abs(normalVec.y)}`
+  );
 });
 
 

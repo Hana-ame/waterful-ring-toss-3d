@@ -2138,7 +2138,10 @@ export function resolveRingTankAndPegCollisionsExact(
     }
 
     // --- CASE 1: RING IS TOPOLOGICALLY LINKED ON THIS NEEDLE (`ring.hookedPegId === peg.id`) ---
-    // Uses smooth analytical Coaxial IPC Cylindrical Guide + Sliding Friction + Self-Leveling
+    // Pure 3D Multi-Point Rigid-Body Contact + IPC Barrier + Coulomb Friction:
+    // Evaluates all 8 points around the 3D torus circle against the tapered conical needle shaft [cupY, pegTopY]
+    // and the 3D rounded holder tray disk (cupDiskY). Every linear and angular velocity change comes strictly
+    // from physical contact forces & impulses (Delta omega = I^-1 * (r x J)) at true 3D lever arms!
     if (ring.hookedPegId === peg.id) {
       if (
         ring.position.y > pegTopY + r * 0.65 &&
@@ -2148,96 +2151,153 @@ export function resolveRingTankAndPegCollisionsExact(
         continue;
       }
 
-      const clampedY = THREE.MathUtils.clamp(ring.position.y, cupY, pegTopY);
-      const hFrac = THREE.MathUtils.clamp((clampedY - peg.baseY) / peg.height, 0, 1);
-      const pegRadiusAtY = THREE.MathUtils.lerp(peg.baseRadius, peg.tipRadius, hFrac);
+      const coneSlope = (peg.baseRadius - peg.tipRadius) / Math.max(0.1, peg.height);
+      const invConeNorm = 1.0 / Math.sqrt(1.0 + coneSlope * coneSlope);
+      const cupRimRadius = 0.024;
+      const cupDiskY = cupY - 0.012;
+      const diskCoreR = Math.max(0.04, peg.holderCupRadius - cupRimRadius);
 
-      const maxInnerClearance = Math.max(0.016, holeRadius - pegRadiusAtY);
-      const radialGap = maxInnerClearance - horizDist;
+      for (let k = 0; k < NUM_BI_SEEDS; k++) {
+        const c = BI_SEED_COS[k] * R;
+        const sn = BI_SEED_SIN[k] * R;
+        const armX = _ringAxisU.x * c + _ringAxisV.x * sn;
+        const armY = _ringAxisU.y * c + _ringAxisV.y * sn;
+        const armZ = _ringAxisU.z * c + _ringAxisV.z * sn;
 
-      if (horizDist > 1e-6) {
-        const ux = dxCenter / horizDist;
-        const uz = dzCenter / horizDist;
+        const ptX = ring.position.x + armX;
+        const ptY = ring.position.y + armY;
+        const ptZ = ring.position.z + armZ;
 
-        if (radialGap < ipcDHat) {
-          const armX = -ux * R;
-          const armZ = -uz * R;
+        // 1A. 3D Inner-Rim Point vs. Tapered Conical Needle Shaft [cupY, pegTopY]:
+        const armHoriz = Math.hypot(armX, armZ);
+        if (armHoriz > 1e-5) {
+          const ex = armX / armHoriz;
+          const ez = armZ / armHoriz;
+
+          const clampedY = THREE.MathUtils.clamp(ptY, cupY, pegTopY);
+          const hFrac = THREE.MathUtils.clamp((clampedY - peg.baseY) / peg.height, 0, 1);
+          const pegRadiusAtY = THREE.MathUtils.lerp(peg.baseRadius, peg.tipRadius, hFrac);
+
+          // Signed radial coordinate of the torus centerline point along outward direction (ex, ez) from needle axis:
+          const signedRadial = (ptX - peg.baseX) * ex + (ptZ - peg.baseZ) * ez;
+          // Also account for the axial tube thickness (r * n_ring) when tilted relative to the vertical shaft:
+          const tiltRimShift = Math.abs(_ringNormal.x * ex + _ringNormal.z * ez) * r * 0.45;
+          const minInnerRadius = r + pegRadiusAtY + tiltRimShift;
+          const gapShaft = signedRadial - minInnerRadius;
+
+          // Contact point on the inner tube surface of the torus (lever arm from ring center of mass):
+          const armInnerX = armX - ex * r;
+          const armInnerY = armY;
+          const armInnerZ = armZ - ez * r;
+
+          // True 3D outward normal of the tapered conical needle surface at azimuth (ex, ez):
+          const nxShaft = ex * invConeNorm;
+          const nyShaft = coneSlope * invConeNorm;
+          const nzShaft = ez * invConeNorm;
+
+          if (gapShaft < ipcDHat) {
+            applyIPCBarrierWithFriction(
+              ring,
+              armInnerX,
+              armInnerY,
+              armInnerZ,
+              nxShaft,
+              nyShaft,
+              nzShaft,
+              Math.max(0.0, gapShaft),
+              ipcDHat,
+              0.28,
+              0.14,
+              invMass,
+              invInertia,
+              subDt
+            );
+          }
+
+          if (gapShaft < 0) {
+            applyContactImpulse(
+              ring,
+              armInnerX,
+              armInnerY,
+              armInnerZ,
+              nxShaft,
+              nyShaft,
+              nzShaft,
+              -gapShaft,
+              0.12,
+              0.18,
+              invMass,
+              invInertia,
+              0.22,
+              _posDeltaAccum
+            );
+          }
+        }
+
+        // 1B. 3D Torus Point vs. Rounded Holder Tray Disk (`cupDiskY`) at the bottom of the needle:
+        const dxD = ptX - peg.baseX;
+        const dzD = ptZ - peg.baseZ;
+        const radD = Math.hypot(dxD, dzD);
+        const qx = radD > diskCoreR && radD > 1e-6 ? peg.baseX + (dxD / radD) * diskCoreR : ptX;
+        const qz = radD > diskCoreR && radD > 1e-6 ? peg.baseZ + (dzD / radD) * diskCoreR : ptZ;
+
+        const dxCup = ptX - qx;
+        const dyCup = ptY - cupDiskY;
+        const dzCup = ptZ - qz;
+        const distCup = Math.hypot(dxCup, dyCup, dzCup);
+        const minCupDist = r + cupRimRadius;
+        const gapCup = ptY >= cupDiskY ? distCup - minCupDist : -(minCupDist + distCup);
+
+        if (gapCup < ipcDHat) {
+          const rawNx = dxCup;
+          const rawNy = Math.max(0.01, dyCup);
+          const rawNz = dzCup;
+          const rawLen = Math.hypot(rawNx, rawNy, rawNz) || 1.0;
+          const nxCup = rawNx / rawLen;
+          const nyCup = rawNy / rawLen;
+          const nzCup = rawNz / rawLen;
+
+          // Contact point on the lower surface of the torus tube at point k:
+          const armCupX = armX - nxCup * r;
+          const armCupY = armY - nyCup * r;
+          const armCupZ = armZ - nzCup * r;
+
           applyIPCBarrierWithFriction(
             ring,
-            armX,
-            0,
-            armZ,
-            -ux,
-            0,
-            -uz,
-            radialGap,
+            armCupX,
+            armCupY,
+            armCupZ,
+            nxCup,
+            nyCup,
+            nzCup,
+            Math.max(0.0, gapCup),
             ipcDHat,
-            0.55,
-            0.06, // Smooth physical sliding friction against needle shaft
+            0.32,
+            0.22,
             invMass,
             invInertia,
             subDt
           );
-        }
 
-        if (horizDist > maxInnerClearance) {
-          const excess = horizDist - maxInnerClearance;
-          // Clamped Baumgarte radial correction prevents any sudden sideways jump
-          const radialCorr = Math.min(0.0045, excess * 0.35);
-          _posDeltaAccum.x -= ux * radialCorr;
-          _posDeltaAccum.z -= uz * radialCorr;
-          const vOut = ring.velocity.x * ux + ring.velocity.z * uz;
-          if (vOut > 0) {
-            ring.velocity.x -= ux * vOut * 1.12;
-            ring.velocity.z -= uz * vOut * 1.12;
-            // Physical Coulomb sliding deceleration when inner rim presses hard against shaft
-            const vyAbs = Math.abs(ring.velocity.y);
-            if (vyAbs > 1e-4) {
-              const dvFric = Math.min(vyAbs * 0.18, 0.06 * vOut);
-              ring.velocity.y -= Math.sign(ring.velocity.y) * dvFric;
-            }
+          if (gapCup < 0) {
+            applyContactImpulse(
+              ring,
+              armCupX,
+              armCupY,
+              armCupZ,
+              nxCup,
+              nyCup,
+              nzCup,
+              -gapCup,
+              0.12,
+              0.24,
+              invMass,
+              invInertia,
+              0.24,
+              _posDeltaAccum
+            );
           }
         }
-      }
-
-      // Smooth IPC rotational self-leveling around the needle shaft
-      const targetSignY = _ringNormal.y >= 0 ? 1.0 : -1.0;
-      const levelTorqueX = -_ringNormal.z * targetSignY;
-      const levelTorqueZ = _ringNormal.x * targetSignY;
-      ring.angularVelocity.x = ring.angularVelocity.x * 0.84 + levelTorqueX * 1.75;
-      ring.angularVelocity.z = ring.angularVelocity.z * 0.84 + levelTorqueZ * 1.75;
-      ring.angularVelocity.y *= 0.92;
-
-      // Smooth Holder Cup Disk Support (`cupY`) at the bottom of the needle (accounts for ring tilt so tilted rims never clip the tray!)
-      const sinTilt = Math.sqrt(Math.max(0.0, 1.0 - _ringNormal.y * _ringNormal.y));
-      const minHookedY = cupY + r + 0.012 + R * sinTilt * 0.55;
-      const cupGap = ring.position.y - minHookedY;
-      if (cupGap < ipcDHat && state.gravityDir.y < 0) {
-        applyIPCBarrierWithFriction(
-          ring,
-          0,
-          -r - R * sinTilt * 0.55,
-          0,
-          0,
-          1,
-          0,
-          cupGap,
-          ipcDHat,
-          0.48,
-          0.18,
-          invMass,
-          invInertia,
-          subDt
-        );
-      }
-      if (ring.position.y < minHookedY) {
-        const penY = minHookedY - ring.position.y;
-        _posDeltaAccum.y += Math.min(0.0045, penY * 0.42);
-        if (ring.velocity.y < 0) {
-          ring.velocity.y *= -0.12;
-        }
-        ring.velocity.x *= 0.86;
-        ring.velocity.z *= 0.86;
       }
       continue;
     }
@@ -2617,9 +2677,9 @@ function applyContactImpulse(
 
 /**
  * Exact 3D Torus-to-Torus Collision Resolution (`resolveRingToRingCollisionsExact3D`):
- * - Uses Coaxial 1D Vertical IPC Stack Solver when two rings are hooked on the SAME needle (`a.hookedPegId === b.hookedPegId`),
- *   preventing any horizontal wedging between stacked rings on a needle!
- * - Protects hooked rings from being pushed radially into the needle shaft by unhooked rings!
+ * - Uses 8-Point 3D Torus-to-Torus Stack Contact Solver when two rings are hooked on the SAME needle (`a.hookedPegId === b.hookedPegId`),
+ *   computing true 3D lever arms `r_A, r_B` and rotational contact torques `r x J` so stacked tilted rings physically rock and settle onto each other!
+ * - Protects hooked rings from being pushed radially through the needle shaft by unhooked rings!
  */
 export function resolveRingToRingCollisionsExact3D(rings: RingState[]): void {
   const n = rings.length;
@@ -2634,31 +2694,99 @@ export function resolveRingToRingCollisionsExact3D(rings: RingState[]): void {
       const invInertiaB = invMassB / (0.65 * b.majorRadius * b.majorRadius);
       const totalInvMass = invMassA + invMassB;
 
-      // --- SPECIAL CASE: Both rings are hooked on the SAME needle (`coaxial stack`) ---
+      // --- SPECIAL CASE: Both rings are hooked on the SAME needle (`3D multi-point coaxial stack`) ---
       if (a.hookedPegId !== null && a.hookedPegId === b.hookedPegId) {
-        const minStackDist = a.minorRadius + b.minorRadius + 0.004;
-        const dy = b.position.y - a.position.y;
-        const absDy = Math.abs(dy);
-        if (absDy < minStackDist) {
-          const signY = dy >= 0 ? 1.0 : -1.0;
-          const penY = minStackDist - absDy;
-          const stepStackCorr = Math.min(0.0045, penY * 0.35);
+        const minStackDist = a.minorRadius + b.minorRadius + 0.003;
+        if (Math.abs(b.position.y - a.position.y) > a.majorRadius + b.majorRadius + minStackDist) {
+          continue;
+        }
+
+        _ringAxisU.set(1, 0, 0).applyQuaternion(a.quaternion);
+        _ringAxisV.set(0, 1, 0).applyQuaternion(a.quaternion);
+        _ringNormalB.set(0, 0, 1).applyQuaternion(b.quaternion).normalize();
+        _ringAxisUB.set(1, 0, 0).applyQuaternion(b.quaternion);
+
+        const signY = b.position.y >= a.position.y ? 1.0 : -1.0;
+
+        for (let k = 0; k < NUM_BI_SEEDS; k++) {
+          const c = BI_SEED_COS[k] * a.majorRadius;
+          const sn = BI_SEED_SIN[k] * a.majorRadius;
+          const armAx = _ringAxisU.x * c + _ringAxisV.x * sn;
+          const armAy = _ringAxisU.y * c + _ringAxisV.y * sn;
+          const armAz = _ringAxisU.z * c + _ringAxisV.z * sn;
+
+          _closestA.set(a.position.x + armAx, a.position.y + armAy, a.position.z + armAz);
+          closestPointOnCircle3D(
+            b.position,
+            _ringNormalB,
+            _ringAxisUB,
+            b.majorRadius,
+            _closestA,
+            _closestB
+          );
+
+          const dyPt = (_closestB.y - _closestA.y) * signY;
+          if (dyPt >= minStackDist) continue;
+
+          const penY = minStackDist - dyPt;
+          const stepStackCorr = Math.min(0.0018, penY * 0.14);
           a.position.y -= signY * stepStackCorr;
           b.position.y += signY * stepStackCorr;
 
-          const relVy = (b.velocity.y - a.velocity.y) * signY;
-          if (relVy < 0) {
-            const jStack = (-(1.0 + 0.12) * relVy) / totalInvMass;
-            a.velocity.y -= signY * jStack * invMassA;
-            b.velocity.y += signY * jStack * invMassB;
+          const armBx = _closestB.x - b.position.x;
+          const armBy = _closestB.y - b.position.y;
+          const armBz = _closestB.z - b.position.z;
+
+          const vAx = a.velocity.x + (a.angularVelocity.y * armAz - a.angularVelocity.z * armAy);
+          const vAy = a.velocity.y + (a.angularVelocity.z * armAx - a.angularVelocity.x * armAz);
+          const vAz = a.velocity.z + (a.angularVelocity.x * armAy - a.angularVelocity.y * armAx);
+
+          const vBx = b.velocity.x + (b.angularVelocity.y * armBz - b.angularVelocity.z * armBy);
+          const vBy = b.velocity.y + (b.angularVelocity.z * armBx - b.angularVelocity.x * armBz);
+          const vBz = b.velocity.z + (b.angularVelocity.x * armBy - b.angularVelocity.y * armBx);
+
+          const relVy = (vBy - vAy) * signY;
+          // Normal is (0, signY, 0), so r x n = (-armZ * signY, 0, armX * signY)
+          const rxnAx = -armAz * signY;
+          const rxnAz = armAx * signY;
+          const rxnBx = -armBz * signY;
+          const rxnBz = armBx * signY;
+
+          const angTerm =
+            (rxnAx * rxnAx + rxnAz * rxnAz) * invInertiaA +
+            (rxnBx * rxnBx + rxnBz * rxnBz) * invInertiaB;
+          const denom = totalInvMass + angTerm;
+
+          const penImpulse = (Math.min(0.018, penY * 0.25) / denom) * 0.25;
+          const velImpulse = relVy < 0 ? (-(1.0 + 0.12) * relVy) / denom * 0.25 : 0.0;
+          const jStack = penImpulse + velImpulse;
+
+          a.velocity.y -= signY * jStack * invMassA;
+          b.velocity.y += signY * jStack * invMassB;
+
+          a.angularVelocity.x -= rxnAx * jStack * invInertiaA;
+          a.angularVelocity.z -= rxnAz * jStack * invInertiaA;
+          b.angularVelocity.x += rxnBx * jStack * invInertiaB;
+          b.angularVelocity.z += rxnBz * jStack * invInertiaB;
+
+          // Physical Coulomb tangential friction between stacked rings at their 3D contact arms
+          const rvx = vBx - vAx;
+          const rvz = vBz - vAz;
+          const vtLen = Math.hypot(rvx, rvz);
+          if (vtLen > 1e-4) {
+            const tx = rvx / vtLen;
+            const tz = rvz / vtLen;
+            const jt = Math.min(0.18 * jStack, (vtLen / totalInvMass) * 0.12);
+            a.velocity.x += tx * jt * invMassA;
+            a.velocity.z += tz * jt * invMassA;
+            b.velocity.x -= tx * jt * invMassB;
+            b.velocity.z -= tz * jt * invMassB;
+
+            const rxtAy = armAz * tx - armAx * tz;
+            const rxtBy = armBz * tx - armBx * tz;
+            a.angularVelocity.y += rxtAy * jt * invInertiaA;
+            b.angularVelocity.y -= rxtBy * jt * invInertiaB;
           }
-          // Tangential friction between coaxially stacked rings
-          const relVx = b.velocity.x - a.velocity.x;
-          const relVz = b.velocity.z - a.velocity.z;
-          a.velocity.x += relVx * 0.08;
-          a.velocity.z += relVz * 0.08;
-          b.velocity.x -= relVx * 0.08;
-          b.velocity.z -= relVz * 0.08;
         }
         continue;
       }
@@ -2731,16 +2859,13 @@ export function resolveRingToRingCollisionsExact3D(rings: RingState[]): void {
           b.velocity.y += ny * jImp * invMassB;
           b.velocity.z += nz * jImp * invMassB * weightBxz;
 
-          if (!aHooked) {
-            a.angularVelocity.x -= rxnAx * jImp * invInertiaA;
-            a.angularVelocity.y -= rxnAy * jImp * invInertiaA;
-            a.angularVelocity.z -= rxnAz * jImp * invInertiaA;
-          }
-          if (!bHooked) {
-            b.angularVelocity.x += rxnBx * jImp * invInertiaB;
-            b.angularVelocity.y += rxnBy * jImp * invInertiaB;
-            b.angularVelocity.z += rxnBz * jImp * invInertiaB;
-          }
+          a.angularVelocity.x -= rxnAx * jImp * invInertiaA;
+          a.angularVelocity.y -= rxnAy * jImp * invInertiaA;
+          a.angularVelocity.z -= rxnAz * jImp * invInertiaA;
+
+          b.angularVelocity.x += rxnBx * jImp * invInertiaB;
+          b.angularVelocity.y += rxnBy * jImp * invInertiaB;
+          b.angularVelocity.z += rxnBz * jImp * invInertiaB;
 
           // Ring-to-Ring IPC C1 mollified tangential friction
           const vtX = rvx - relVn * nx;
