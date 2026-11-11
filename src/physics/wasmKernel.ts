@@ -595,155 +595,124 @@ function buildWasmPhysicsBinary(): Uint8Array {
         )
       ),
 
-      // Check if ring is settling / falling through water (FVY < 0.65) vs being blasted upward inside a nozzle jet core
-      ...wasmIf(
-        f32Gt(f32Const(0.65), localGet(FVY)),
-        [
-          // --- FREE-FALL SETTLING IN WATER: Andersen-Pesavento-Wang (2005) Fluttering + Tumbling + Chaotic Regime ---
-          // 4a. Kutta-Zhukovsky / Magnus Rotational-Translational Circulation Lift: V += 0.24 * (W x RV) * DT
-          ...localSet(TMP1, f32Mul(f32Const(0.24), localGet(DT))),
-          ...localSet(
-            VX,
-            f32Add(
-              localGet(VX),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(WY), localGet(RVZ)), f32Mul(localGet(WZ), localGet(RVY)))
-              )
-            )
-          ),
-          ...localSet(
-            VZ,
-            f32Add(
-              localGet(VZ),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(WX), localGet(RVY)), f32Mul(localGet(WY), localGet(RVX)))
-              )
-            )
-          ),
+      // Unified 3D Hydrodynamic Lift, Added-Mass Moment & Autorotation Coupling (zero piecewise velocity branches!):
+      // 4a. Kutta-Zhukovsky / Magnus Rotational-Translational Circulation Lift: V += 0.24 * (W x RV) * DT
+      ...localSet(TMP1, f32Mul(f32Const(0.24), localGet(DT))),
+      ...localSet(
+        VX,
+        f32Add(
+          localGet(VX),
+          f32Mul(
+            localGet(TMP1),
+            f32Sub(f32Mul(localGet(WY), localGet(RVZ)), f32Mul(localGet(WZ), localGet(RVY)))
+          )
+        )
+      ),
+      ...localSet(
+        VZ,
+        f32Add(
+          localGet(VZ),
+          f32Mul(
+            localGet(TMP1),
+            f32Sub(f32Mul(localGet(WX), localGet(RVY)), f32Mul(localGet(WY), localGet(RVX)))
+          )
+        )
+      ),
 
-          // 4b. Destabilizing Kirchhoff-Kelvin / Munk Added-Mass Moment:
-          // W += -2.15 * VPROJ * (N x RV) * DT
-          ...localSet(TMP1, f32Mul(f32Mul(f32Const(-2.15), localGet(VPROJ)), localGet(DT))),
-          ...localSet(
-            WX,
-            f32Add(
-              localGet(WX),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(NY), localGet(RVZ)), f32Mul(localGet(NZ), localGet(RVY)))
-              )
-            )
-          ),
-          ...localSet(
-            WY,
-            f32Add(
-              localGet(WY),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(NZ), localGet(RVX)), f32Mul(localGet(NX), localGet(RVZ)))
-              )
-            )
-          ),
-          ...localSet(
-            WZ,
-            f32Add(
-              localGet(WZ),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(NX), localGet(RVY)), f32Mul(localGet(NY), localGet(RVX)))
-              )
-            )
-          ),
+      // 4b. Kirchhoff-Kelvin / Munk Added-Mass Moment:
+      // W += -2.15 * VPROJ * (N x RV) * DT
+      ...localSet(TMP1, f32Mul(f32Mul(f32Const(-2.15), localGet(VPROJ)), localGet(DT))),
+      ...localSet(
+        WX,
+        f32Add(
+          localGet(WX),
+          f32Mul(
+            localGet(TMP1),
+            f32Sub(f32Mul(localGet(NY), localGet(RVZ)), f32Mul(localGet(NZ), localGet(RVY)))
+          )
+        )
+      ),
+      ...localSet(
+        WY,
+        f32Add(
+          localGet(WY),
+          f32Mul(
+            localGet(TMP1),
+            f32Sub(f32Mul(localGet(NZ), localGet(RVX)), f32Mul(localGet(NX), localGet(RVZ)))
+          )
+        )
+      ),
+      ...localSet(
+        WZ,
+        f32Add(
+          localGet(WZ),
+          f32Mul(
+            localGet(TMP1),
+            f32Sub(f32Mul(localGet(NX), localGet(RVY)), f32Mul(localGet(NY), localGet(RVX)))
+          )
+        )
+      ),
 
-          // 4c. Leading-Edge Autorotation Tumbling Torque + Wake Vortex-Shedding Coupling:
-          // Sustains continuous horizontal-axis tumbling flips (翻滚) and chaotic flutter-to-tumble transitions (飘摆 + 混沌)
-          // when descending under gravity!
-          ...localSet(TMP2, f32Mul(f32Const(-3.8), localGet(DT))),
-          ...localSet(
-            WX,
-            f32Add(
-              localGet(WX),
-              f32Mul(
-                localGet(TMP2),
-                f32Sub(
-                  f32Mul(f32LoadUniform(11), localGet(RVZ)),
-                  f32Mul(f32LoadUniform(12), localGet(RVY))
-                )
-              )
+      // 4c. Leading-Edge Autorotation Tumbling Torque + Wake Vortex-Shedding Coupling:
+      // Sustains continuous horizontal-axis tumbling flips (翻滚) and chaotic flutter-to-tumble transitions (飘摆 + 混沌)
+      ...localSet(TMP2, f32Mul(f32Const(-3.8), localGet(DT))),
+      ...localSet(
+        WX,
+        f32Add(
+          localGet(WX),
+          f32Mul(
+            localGet(TMP2),
+            f32Sub(
+              f32Mul(f32LoadUniform(11), localGet(VZ)),
+              f32Mul(f32LoadUniform(12), localGet(VY))
             )
-          ),
-          ...localSet(
-            WZ,
-            f32Add(
-              localGet(WZ),
-              f32Mul(
-                localGet(TMP2),
-                f32Sub(
-                  f32Mul(f32LoadUniform(10), localGet(RVY)),
-                  f32Mul(f32LoadUniform(11), localGet(RVX))
-                )
-              )
+          )
+        )
+      ),
+      ...localSet(
+        WZ,
+        f32Add(
+          localGet(WZ),
+          f32Mul(
+            localGet(TMP2),
+            f32Sub(
+              f32Mul(f32LoadUniform(10), localGet(VY)),
+              f32Mul(f32LoadUniform(11), localGet(VX))
             )
-          ),
+          )
+        )
+      ),
 
-          // Autorotational spin sustainment driven by downward slip speed max(0, -RVY):
-          ...localSet(
-            TMP3,
-            f32Mul(f32Max(f32Const(0.0), f32Sub(f32Const(0.0), localGet(RVY))), localGet(DT))
-          ),
-          ...localSet(
-            WX,
+      // Continuous autorotational spin sustainment driven by downward descent speed max(0, -VY):
+      ...localSet(
+        TMP3,
+        f32Mul(f32Max(f32Const(0.0), f32Sub(f32Const(0.0), localGet(VY))), localGet(DT))
+      ),
+      ...localSet(
+        WX,
+        f32Add(
+          localGet(WX),
+          f32Mul(
+            localGet(TMP3),
             f32Add(
-              localGet(WX),
-              f32Mul(
-                localGet(TMP3),
-                f32Add(
-                  f32Mul(f32Const(1.85), localGet(WX)),
-                  f32Mul(f32Const(11.0), f32LoadUniform(29))
-                )
-              )
+              f32Mul(f32Const(1.85), localGet(WX)),
+              f32Mul(f32Const(11.0), f32LoadUniform(29))
             )
-          ),
-          ...localSet(
-            WZ,
+          )
+        )
+      ),
+      ...localSet(
+        WZ,
+        f32Add(
+          localGet(WZ),
+          f32Mul(
+            localGet(TMP3),
             f32Add(
-              localGet(WZ),
-              f32Mul(
-                localGet(TMP3),
-                f32Add(
-                  f32Mul(f32Const(1.85), localGet(WZ)),
-                  f32Mul(f32Const(12.5), f32LoadUniform(28))
-                )
-              )
+              f32Mul(f32Const(1.85), localGet(WZ)),
+              f32Mul(f32Const(12.5), f32LoadUniform(28))
             )
-          ),
-        ],
-        [
-          // --- INSIDE UPZZLE JET PLUME (FVY >= 0.65): High-thrust upward capture + shear tumble ---
-          ...localSet(TMP1, f32Mul(f32Mul(f32Const(2.2), localGet(VPROJ)), localGet(DT))),
-          ...localSet(
-            WX,
-            f32Add(
-              localGet(WX),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(NY), localGet(RVZ)), f32Mul(localGet(NZ), localGet(RVY)))
-              )
-            )
-          ),
-          ...localSet(
-            WZ,
-            f32Add(
-              localGet(WZ),
-              f32Mul(
-                localGet(TMP1),
-                f32Sub(f32Mul(localGet(NX), localGet(RVY)), f32Mul(localGet(NY), localGet(RVX)))
-              )
-            )
-          ),
-        ]
+          )
+        )
       ),
 
       // Fluid Vorticity Spin + Padé Angular Damping: W = (W + 1.85 * VORT * DT) / (1 + angDrag * DT)

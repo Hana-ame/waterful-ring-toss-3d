@@ -15,6 +15,8 @@ import {
   computeGaussLinkingNumberRingPeg,
   saveSimulationStateToStorage,
   loadSimulationStateFromStorage,
+  resolveRingTankAndPegCollisionsExact,
+  resolveRingToRingCollisionsExact3D,
   testOBBvsOBB_SAT,
   OBB3D,
 } from './waterPhysics';
@@ -666,7 +668,98 @@ test('Fluttering + Tumbling (飘摆 + 翻滚) falling hydrodynamics, exact 3D ho
   );
 });
 
+test('Needle Tip (尖尖头) Exhaustive Continuity & Anti-Teleportation Stress Test across offsets and tilts', () => {
+  // 1. Verify ZERO mid-air repulsion when ring tube is 1.2cm (0.012m > ipcDHat=0.008m) above the needle tip
+  const airState = createInitialSimulationState(1);
+  airState.gravityMagnitude = 0;
+  airState.config.turbulenceStrength = 0;
+  const peg = airState.pegs[0];
+  const pegTopY = peg.baseY + peg.height;
+  const r0 = airState.rings[0];
+  r0.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+  // Place ring tube at x = peg.baseX + R, y = pegTopY + r + peg.tipRadius + 0.012 (1.2cm clear of tip)
+  r0.position.set(peg.baseX + r0.majorRadius, pegTopY + r0.minorRadius + peg.tipRadius + 0.012, peg.baseZ);
+  r0.velocity.set(0, 0, 0);
+  r0.angularVelocity.set(0, 0, 0);
+  stepWaterSimulation(airState, 1 / 60);
+  assert.ok(
+    r0.velocity.length() < 1e-4 && r0.angularVelocity.length() < 1e-4,
+    `Ring 1.2cm outside needle tip surface must NOT hit any invisible mid-air force bubble (vel=${r0.velocity.length()})`
+  );
 
+  // 2. Sweep across critical radial offsets (straddling tip, hitting tip head-on, grazing outside/inside) and tilt angles
+  const offsets = [0.0, 0.05, 0.11, 0.145, 0.165, 0.185, 0.21];
+  const tilts = [0, 22, 48, 68, 82];
 
+  for (const offset of offsets) {
+    for (const tiltDeg of tilts) {
+      const tipState = createInitialSimulationState(1);
+      const tPeg = tipState.pegs[0];
+      const tTopY = tPeg.baseY + tPeg.height;
+      const ring = tipState.rings[0];
 
+      const tiltRad = THREE.MathUtils.degToRad(tiltDeg);
+      ring.quaternion.setFromEuler(new THREE.Euler(Math.PI / 2 - tiltRad, 0, 0.2));
+      ring.position.set(tPeg.baseX + offset, tTopY + 0.09, tPeg.baseZ + 0.01);
+      ring.velocity.set(-0.25, -0.85, 0.1);
+      ring.angularVelocity.set(0.8, 0.2, -0.6);
 
+      const prevPos = ring.position.clone();
+      for (let f = 0; f < 45; f++) {
+        stepWaterSimulation(tipState, 1 / 60);
+        const frameDelta = ring.position.distanceTo(prevPos);
+        const speed = ring.velocity.length();
+        assert.ok(
+          frameDelta < 0.055,
+          `Needle tip teleportation detected at offset=${offset}, tilt=${tiltDeg}deg, frame=${f}: frameDelta=${frameDelta.toFixed(4)}m`
+        );
+        assert.ok(
+          speed < 3.2,
+          `Non-physical velocity spike at needle tip (offset=${offset}, tilt=${tiltDeg}deg, frame=${f}): speed=${speed.toFixed(3)}m/s`
+        );
+        prevPos.copy(ring.position);
+      }
+    }
+  }
+
+  // 3. Verify 100% Unified Non-Piecewise Physics ("不要分段物理，统一"):
+  // Calling `resolveRingTankAndPegCollisionsExact` and `resolveRingToRingCollisionsExact3D`
+  // must produce bit-for-bit identical positions, velocities, and angular velocities regardless of `hookedPegId`.
+  const stateA = createInitialSimulationState(2);
+  const stateB = createInitialSimulationState(2);
+  const pegA = stateA.pegs[0];
+  for (const [idx, s] of [stateA, stateB].entries()) {
+    s.rings[0].position.set(pegA.baseX + 0.03, pegA.baseY + pegA.holderCupY + 0.08, pegA.baseZ);
+    s.rings[0].velocity.set(-0.3, -0.4, 0.12);
+    s.rings[0].quaternion.setFromEuler(new THREE.Euler(Math.PI / 2 - 0.35, 0.1, 0.2));
+    s.rings[0].angularVelocity.set(1.1, -0.4, 0.7);
+    s.rings[0].hookedPegId = idx === 0 ? pegA.id : null;
+
+    s.rings[1].position.set(pegA.baseX + 0.02, pegA.baseY + pegA.holderCupY + 0.19, pegA.baseZ);
+    s.rings[1].velocity.set(0.2, -0.5, -0.1);
+    s.rings[1].quaternion.setFromEuler(new THREE.Euler(Math.PI / 2 + 0.25, -0.1, -0.15));
+    s.rings[1].angularVelocity.set(-0.8, 0.3, -0.5);
+    s.rings[1].hookedPegId = idx === 0 ? pegA.id : null;
+  }
+
+  resolveRingToRingCollisionsExact3D(stateA.rings);
+  resolveRingToRingCollisionsExact3D(stateB.rings);
+  resolveRingTankAndPegCollisionsExact(stateA, stateA.rings[0], 1 / 1440);
+  resolveRingTankAndPegCollisionsExact(stateB, stateB.rings[0], 1 / 1440);
+
+  assert.equal(
+    stateA.rings[0].position.distanceTo(stateB.rings[0].position),
+    0,
+    'Unified collision solver must produce identical position regardless of hookedPegId'
+  );
+  assert.equal(
+    stateA.rings[0].velocity.distanceTo(stateB.rings[0].velocity),
+    0,
+    'Unified collision solver must produce identical velocity regardless of hookedPegId'
+  );
+  assert.equal(
+    stateA.rings[0].angularVelocity.distanceTo(stateB.rings[0].angularVelocity),
+    0,
+    'Unified collision solver must produce identical angularVelocity regardless of hookedPegId'
+  );
+});
