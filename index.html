@@ -9,6 +9,10 @@
     <meta property="og:description" content="基于 Three.js 完整复刻 1976 年 TOMY 纯物理无电池水压套圈掌机，真实模拟流体动力学、塑料环各向异性水阻、三维圆环与立柱碰撞及手机陀螺仪重力感应。" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#082F49" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="icon" type="image/png" href="./icon-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Outfit:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -16,6 +20,15 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('./sw.js').catch(function (err) {
+            console.error('SW registration failed:', err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>
 

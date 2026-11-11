@@ -1,0 +1,31 @@
+{
+  "name": "Waterful Ring-Toss 3D",
+  "short_name": "Ring-Toss 3D",
+  "description": "基于 Three.js 完整复刻 1976 年 TOMY 纯物理无电池水压套圈掌机，真实模拟流体动力学、塑料环各向异性水阻、三维圆环与立柱碰撞及手机陀螺仪重力感应。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#082F49",
+  "theme_color": "#082F49",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
