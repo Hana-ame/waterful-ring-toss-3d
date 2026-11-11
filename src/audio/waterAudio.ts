@@ -24,6 +24,15 @@ class WaterSoundEngine {
 
   public setMuted(muted: boolean): void {
     this.isMuted = muted;
+    // When muting, suspend the AudioContext so any in-flight sound is silenced immediately.
+    // When unmuting, resume it (ensureContext also resumes on next play).
+    if (this.ctx) {
+      if (muted) {
+        this.ctx.suspend().catch(() => {});
+      } else if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    }
   }
 
   public getMuted(): boolean {

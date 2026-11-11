@@ -23,6 +23,23 @@ import { waterAudio } from './audio/waterAudio';
 export default function App() {
   const [leftCompression, setLeftCompression] = useState<number>(0);
   const [rightCompression, setRightCompression] = useState<number>(0);
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      return window.localStorage.getItem('waterful-muted') === '1';
+    }
+    return false;
+  });
+
+  const toggleMute = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      waterAudio.setMuted(next);
+      if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+        window.localStorage.setItem('waterful-muted', next ? '1' : '0');
+      }
+      return next;
+    });
+  }, []);
 
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const simStateRef = useRef<SimulationState | null>(null);
@@ -39,6 +56,9 @@ export default function App() {
     if (typeof document !== 'undefined') {
       document.body.dataset.state = 'playing';
     }
+    // Sync initial mute state to the audio engine (restored from localStorage)
+    waterAudio.setMuted(isMuted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Wire hardware gyroscope & orientation sensor bridge (deviceorientation + devicemotion rotationRate)
@@ -391,6 +411,30 @@ export default function App() {
         data-testid="waterful-3d-canvas"
         className="absolute inset-0 w-full h-full"
       />
+
+      {/* Mute / Unmute Toggle Button (top-right corner) */}
+      <button
+        type="button"
+        data-testid="mute-toggle-button"
+        aria-label={isMuted ? 'Unmute Sound' : 'Mute Sound'}
+        aria-pressed={isMuted}
+        onClick={toggleMute}
+        className="fixed top-4 right-4 z-30 pointer-events-auto w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center cursor-pointer focus:outline-none transition-colors duration-150 bg-[#0b2a4a]/80 backdrop-blur-sm border border-sky-400/40 shadow-[0_4px_14px_rgba(0,0,0,0.35)] hover:bg-[#0e3358]/90 active:scale-95"
+      >
+        {isMuted ? (
+          <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M11 5 6 9H2v6h4l5 4V5z" fill="currentColor" stroke="none" />
+            <line x1="23" y1="9" x2="17" y2="15" />
+            <line x1="17" y1="9" x2="23" y2="15" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 24 24" className="w-6 h-6 text-sky-200" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M11 5 6 9H2v6h4l5 4V5z" fill="currentColor" stroke="none" />
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+          </svg>
+        )}
+      </button>
 
       {/* Left & Right Physical Pump Buttons (Touch Duration Controls Force) */}
       <div className="fixed inset-x-0 bottom-6 sm:bottom-9 z-20 pointer-events-none flex items-center justify-between px-6 sm:px-12">
