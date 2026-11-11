@@ -208,7 +208,7 @@ export const DEFAULT_PHYSICS_CONFIG: PhysicsConfig = {
   waterDensity: 1.0,
   normalDragCoeff: 2.05,
   tangentDragCoeff: 0.78,
-  angularDragCoeff: 0.65,
+  angularDragCoeff: 1.5,
   jetPowerMultiplier: 1.0,
   turbulenceStrength: 0.85,
   wasmSubsteps: 24,
